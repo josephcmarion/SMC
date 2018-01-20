@@ -1,0 +1,3 @@
+S'\n        data {\n            int<lower = 1> D;\n            real<lower=0> beta;\n            vector[D] mu;\n            matrix[D,D] covariance;\n        }\n\n        parameters {\n            vector[D] x;\n        }\n\n        model {\n            target += beta*multi_normal_lpdf(x | mu, covariance);\n        }\n        '
+p1
+.
