@@ -200,7 +200,7 @@ class Sampler:
 
 class NormalSampler(Sampler):
 
-    def __init__(self, mean, covariance, directory='src/smc/stan', stan_file='normal_model.stan',
+    def __init__(self, mean, covariance, directory='stan', stan_file='normal_model.stan',
                  model_code_file='normal_model.txt', load=True):
         """Sequential monte carlo sampler for a normal distribution with specified mean and variance
         Uses a tempered sequence of distributions for sampling. Markov kernels are done via nuts in STAN
@@ -345,7 +345,7 @@ class NormalSampler(Sampler):
 class MultimodalNormalSampler(Sampler):
 
     def __init__(self, means, scales, probability=0.5, dimension=2,
-                 directory='src/smc/stan', stan_file='multimodal_normal_model.stan',
+                 directory='stan', stan_file='multimodal_normal_model.stan',
                  model_code_file='multimodal_normal_model.txt', load=True):
         """Sequential monte carlo sampler for a mixture of two spherical normal distribution with specified mean and scales.
         A tempered sequence of distributions is used for sampling, beginning with a spherical normal.
@@ -630,7 +630,7 @@ class MultimodalNormalSampler(Sampler):
 class NormalPathSampler(Sampler):
 
     def __init__(self, mean1, mean2, covariance1, covariance2,
-                 directory='src/smc/stan', stan_file='normal_path_model.stan',
+                 directory='stan', stan_file='normal_path_model.stan',
                  model_code_file='normal_path_model.txt', load=True):
         """ Sequential monte carlo sampler moving from one normal distribution to another via a tempered geometric mixture.
         Primarily used to test path sampling methods. Markov kernels are done via nuts in STAN
