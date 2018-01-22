@@ -1,3 +1,0 @@
-S'\n        data {\n            int<lower = 1> D;\n            vector[D] mu;\n            matrix[D,D] covariance;\n        }\n\n        parameters {\n            vector[D] x;\n        }\n\n        model {\n            target += multi_normal_lpdf(x | mu, covariance);\n        }\n        '
-p1
-.
