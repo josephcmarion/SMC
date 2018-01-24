@@ -2,11 +2,9 @@
 import numpy as np
 from utils import effective_sample_size, log_weights_to_weights, residual_resampling, load_stan_model, ProgressBar, \
     stan_model_wrapper, plot_density, gaussian_kernel, unzip
-
-# model specific imports
 import scipy.stats as stats
 import matplotlib.pyplot as plt
-from scipy.special import expit
+from scipy.special import expit, comb
 
 
 class Sampler:
@@ -1096,3 +1094,180 @@ class MeanFieldIsingSampler(Sampler):
 
         plt.tight_layout()
         plt.show()
+
+
+class LogisticRegressionSampler(Sampler):
+
+    def __init__(self, X, Y, prior_mean, prior_covariance,
+                 directory='stan', stan_file='logistic_regression.stan',
+                 model_code_file='logistic_regression.txt', load=True):
+        """ SMC sampler for logistic regression. Moves from the prior to model of interest via a
+        tempered geometric mixture. Markov kernels are done via nuts in STAN
+
+        attributes
+        ----------
+        X: np.array
+            (N, D) array of covariates, should include the intercept column of ones
+        Y: np.array
+            (N, ) vector of class labels in {0,1}^N
+        prior_mean: np.array
+            (D, ) vector of prior means
+        prior_covariance: np.array
+            (D, D) positive definite prior covariance matrix
+
+        parameters
+        ----------
+        directory: str
+            directory where the stan_file and model_text_file are found. Usually the location of the package
+        stan_file: str
+            File name of the stan file. If the stan file does not exist, will pickle the model to directory/stan_file
+        model_code_file: str
+            File name of the model text file.  Can be none if the stan file exists
+        load:
+            If true, attempts to load the model. If false, compiles the model
+        """
+
+        self.X = X
+        self.Y = Y
+        self.prior_mean = prior_mean
+        self.prior_covariance = prior_covariance
+
+        # load the stan model
+        self.stan_model = load_stan_model(directory, stan_file, model_code_file, self._stan_text_model(), load)
+        Sampler.__init__(self, self._log_pdf, self._initial_distribution, self._markov_kernel)
+
+    def _log_pdf(self, samples, params):
+        """ log_pdf of the geometric tempered logistic model
+
+        parameters
+        ----------
+        samples: np.array
+            (N, D) array of sample coefficients
+        params: tuple
+            first value is a mixing parameter in [0,1] second value is inverse temperature parameter in (0,1]
+
+        return
+        ------
+        np.array
+            (N, ) vector of log_densities
+        """
+
+        beta, inverse_temperature = params
+
+        # log likelihood
+        mu = np.dot(samples, self.X.T)
+        pi = expit(mu)
+        log_likelihood = self.Y * np.log(pi) + (1.0 - self.Y) * np.log(1.0 - pi)
+
+        # log prior
+        log_prior = -0.5 * gaussian_kernel(samples, self.prior_mean, self.prior_covariance)
+
+        # log density
+        log_density = inverse_temperature*(beta*log_likelihood.sum(1) + log_prior)
+
+        return log_density
+
+    def _initial_distribution(self, N, params):
+        """ samples from the initial distribution, a flattened normal distribution
+
+        parameters
+        ----------
+        N: int > 0
+            number of samples to draw
+        params: tuple
+            first value is a mixing parameter in [0,1] second value is inverse temperature parameter in (0,1]
+
+        returns
+        -------
+        np.array
+            (N, D) matrix of normally distributed samples
+        """
+
+        # init some things
+        samples = stats.multivariate_normal(mean=self.mean, cov=self.covariance).rvs(N)
+
+        return samples
+
+    def _markov_kernel(self, samples, params, kernel_steps=10):
+        """ markov kernel targeting the normal distribution, implemented in STAN
+
+        parameters
+        ----------
+        samples: np.array
+            (N, D) array of coefficient samples
+        params: tuple
+            first value is a mixing parameter in [0,1] second value is inverse temperature parameter in (0,1]
+        kernel_steps: int >= 2
+            number of hamiltonian transitions to run
+
+        return
+        ------
+        np.array
+            (N, D) array of updated samples
+        """
+        beta, inverse_temperature = params
+
+        # init some things
+        data = {
+            'D': self.mean.shape[0],
+            'N': self.X.shape[0],
+            'X': self.X,
+            'Y': self.Y,
+            'prior_mean': self.mean,
+            'prior_covariance': self.covariance,
+            'beta': beta,
+            'inverse_temperature': inverse_temperature
+        }
+        stan_kwargs = {'pars': 'coefficients'}
+        sample_list = [{'x': s} for s in samples]  # data needs to be a list of dictionaries for multi chains
+
+        # do the sampling
+        new_samples, fit = stan_model_wrapper(sample_list, data, self.stan_model, kernel_steps, stan_kwargs)
+
+        return new_samples
+
+    @staticmethod
+    def _stan_text_model():
+        """ returns the text for a stan model, just in case you've lost it
+
+         returns
+         -------
+         str
+            a stan model file
+         """
+
+        model_code = """
+        data {
+            int<lower = 1> D;
+            int<lower = 1> N;
+
+            matrix[N, D] X;
+            vector[N] Y;
+
+            vector[D] prior_mean;
+            matrix[D,D] prior_covariance;
+
+            real<lower=1, upper=1> beta;
+            real<lower=1, upper=1> inverse_temperature;
+        }
+
+        parameters {
+            vector[D] coefficients;
+        }
+
+        transformed parameters {
+            vector[N] mu;
+            vector[N] pi;
+
+            mu = X*coefficients;
+            pi = inv_logit(mu);
+        }
+
+
+        model {
+            target += inverse_temperature*beta*(Y .* log(pi) + (1-Y) .* log(1-pi));
+            target += inverse_temperature*multi_normal_lpdf(coefficients | prior_mean, prior_covariance);
+        }
+        """
+
+        return model_code
