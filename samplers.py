@@ -1184,7 +1184,7 @@ class LogisticRegressionSampler(Sampler):
         """
 
         # init some things
-        samples = stats.multivariate_normal(mean=self.mean, cov=self.covariance).rvs(N)
+        samples = stats.multivariate_normal(mean=self.prior_mean, cov=self.prior_covariance).rvs(N)
 
         return samples
 
