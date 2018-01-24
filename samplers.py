@@ -981,7 +981,59 @@ class MeanFieldIsingSampler(Sampler):
 
         return samples
 
-    def plot_diagnostics(self, output, max_steps=50):
+    def _true_probabilities(self, params):
+        """ returns the true probabilities of the total magnetism for a specified parameter setting
+
+        parameters
+        ----------
+        params: tuple
+            first value is the inverse temperature parameter in [0,1]
+
+        returns
+        -------
+        np.array
+            (dimension+1,) array of magnetism from most negative to most positive
+        np.array
+            (dimension+1,) probabilities of each magnetism
+        """
+
+        beta = params[0]
+        probabilities = np.zeros(self.dimension + 1)
+        magnetism = np.zeros(self.dimension + 1)
+
+        # compute probabilities
+        for d in range(self.dimension + 1):
+            magnetism[d] = -self.dimension + 2 * d
+            probabilities[d] = comb(self.dimension, d) * np.exp(beta * self.alpha / self.dimension * magnetism[d] ** 2)
+
+        # normalize
+        probabilities /= probabilities.sum()
+
+        return probabilities, magnetism
+
+    def _total_variation(self, samples, params):
+        """ returns the total variation distance between the empirical distribution and the true distribution
+        for a specified inverse temperature
+
+        parameters
+        ----------
+        samples: np.array
+            (N, dimension) array of samples from a single step of sequential monte carlo
+        params: tuple
+            first value is the inverse temperature parameter in [0,1]
+
+        returns
+        -------
+        float
+            total variation distance in (0,1). Smaller is better
+        """
+
+        true_probabilities, magnetism = self._true_probabilities(params)
+        empirical_probabilities = np.array([(samples.sum(1) == m).mean() for m in magnetism])
+
+        return np.abs(true_probabilities - empirical_probabilities).sum() / 2.0
+
+    def plot_diagnostics(self, output, path, max_steps=50):
         """ plots diagnostics for the mean field ising sampler.
 
         parameters
@@ -989,6 +1041,9 @@ class MeanFieldIsingSampler(Sampler):
         output: np.array
             result of self.sampling, a tuple with samples from the full run, final weights, and ess at each step
             sampling must be run with save_all_samples=True
+        path: list of tuples
+            the sequence of interpolating distributions. Initial distribution is at index 0,
+            the target distribution is the final entry
         max_steps:
             maximum number of density plots to create. If larger than the number of steps, uses the number of steps
         """
@@ -1014,10 +1069,13 @@ class MeanFieldIsingSampler(Sampler):
 
         # plot histogram of the final samples
         plt.subplot(223)
-        plt.hist(samples[-1, :].sum(1), bins=np.arange(-self.dimension - 0.5, self.dimension + 1.5))
-        plt.title('Target distribution histogram')
-        plt.xlabel('Magnetism')
-        plt.xlim(-self.dimension - 1, self.dimension + 1)
+        tvs = []
+        for sample, params in zip(samples, path):
+            tvs.append(self._total_variation(sample, params))
+        plt.plot(tvs)
+        plt.title('Total variation distance')
+        plt.xlabel('iteration')
+        plt.ylim(-0.05, 1.05)
 
         # density plot at iterations
         max_steps = np.min((max_steps, samples.shape[0]))
