@@ -1155,8 +1155,13 @@ class LogisticRegressionSampler(Sampler):
         beta, inverse_temperature = params
 
         # log likelihood
-        mu = np.dot(samples, self.X.T)
+        mu = np.dot(samples, self.X.T).sum(1)
         pi = expit(mu)
+
+        # fix some numerical issues
+        pi[pi == 1.0] = 1.0-10**-6
+        pi[pi == 0.0] = 10**-6
+
         log_likelihood = self.Y * np.log(pi) + (1.0 - self.Y) * np.log(1.0 - pi)
 
         # log prior
