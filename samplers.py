@@ -1252,8 +1252,8 @@ class LogisticRegressionSampler(Sampler):
             vector[D] prior_mean;
             matrix[D,D] prior_covariance;
 
-            real<lower=1, upper=1> beta;
-            real<lower=1, upper=1> inverse_temperature;
+            real<lower=0, upper=1> beta;
+            real<lower=0, upper=1> inverse_temperature;
         }
 
         parameters {
