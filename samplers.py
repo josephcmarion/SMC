@@ -1214,12 +1214,12 @@ class LogisticRegressionSampler(Sampler):
 
         # init some things
         data = {
-            'D': self.mean.shape[0],
+            'D': self.prior_mean.shape[0],
             'N': self.X.shape[0],
             'X': self.X,
             'Y': self.Y,
-            'prior_mean': self.mean,
-            'prior_covariance': self.covariance,
+            'prior_mean': self.prior_mean,
+            'prior_covariance': self.prior_covariance,
             'beta': beta,
             'inverse_temperature': inverse_temperature
         }
