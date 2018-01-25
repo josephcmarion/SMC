@@ -1306,6 +1306,8 @@ class LogisticRegressionSampler(Sampler):
         plt.boxplot(samples)
         for i, coefficient in enumerate(true_coefficients):
             plt.plot([i + 0.6, i + 1.4], [coefficient] * 2, color='purple', ls=':', lw=4)
+        plt.title('Coefficient estimates')
+        plt.xlabel('coefficient number')
 
         plt.tight_layout()
         plt.show()
