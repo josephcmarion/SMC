@@ -1276,3 +1276,36 @@ class LogisticRegressionSampler(Sampler):
         """
 
         return model_code
+
+    @staticmethod
+    def plot_diagnostics(output, true_coefficients):
+        """ plots diagnostics for the mean field ising sampler.
+
+        parameters
+        ----------
+        output: np.array
+            result of self.sampling, a tuple with samples from the full run, final weights, and ess at each step
+            sampling must be run with save_all_samples=True
+        true_coefficients: np.array
+            true coefficient values, possibly obtained through high quality monte carlo run
+        """
+
+        samples, log_weights, ess = output
+        plt.rcParams['figure.figsize'] = 10, 6
+
+        # plot ess over iterations
+        plt.subplot(121)
+        plt.plot(ess)
+        plt.ylim(-0.05, 1.05)
+        plt.title('Effective sample size')
+        plt.xlabel('Iteration')
+
+        # plot parameter estimates
+        samples.mean(0)
+        plt.subplot(122)
+        plt.boxplot(samples)
+        for i, coefficient in enumerate(true_coefficients):
+            plt.plot([i + 0.6, i + 1.4], [coefficient] * 2, color='purple', ls=':', lw=4)
+
+        plt.tight_layout()
+        plt.show()

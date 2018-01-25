@@ -29,6 +29,7 @@ def log_weights_to_weights(log_weights, epsilon=10**-3):
     return weights/weights.sum()
 
 
+# todo: this occasionally throws a divide by 0 warning
 def residual_resampling(probabilities):
     """uses residual resampling to draw a new set of particle indices.
     See "Comparison of resampling schemes for particle filtering", Douc 2005
@@ -321,3 +322,54 @@ def gaussian_kernel(samples, mean, precision):
     kernels = (np.dot(delta, precision) * delta).sum(-1)  # this probably isn't the right way to do this
     return kernels
 
+
+def load_pima_indians_data(file_name='data/pima_indians.csv'):
+    """ loads pima indians data from csv and puts it in the right format for
+    the logistic regression samples. Removes the variables diastolic blood pressure
+    triceps_skin_thickness, and serum insulation. Adds a column of ones, and standardizes.
+    The pima indians dataset and the full variable names can be found on the UCI repository
+
+    parameters
+    ----------
+    file_name: str
+        location of the pima indians csv
+
+    returns
+    -------
+    np.array
+        (N, 6) array of standardized covariates. The first column is an intercept,
+        followed by NP, PGC, BMI, DP, and AGE
+    np.array
+        (N, ) response vector (in 0, 1)
+    """
+    from pandas import read_csv
+    from sklearn.preprocessing import StandardScaler
+
+    names = [
+        'NP',
+        'PGC',
+        'diastolic_blood_pressure',
+        'triceps_skin_thickness',
+        'serum insulin',
+        'BMI',
+        'DP',
+        'AGE',
+        'class'
+    ]
+    pima_df = read_csv(file_name, names=names)
+
+    # prepare data
+    # drop unnecessary columns
+    pima_df.drop([
+        'diastolic_blood_pressure',
+        'triceps_skin_thickness',
+        'serum insulin'
+    ], axis=1, inplace=True)
+
+    # pull out the data for regression
+    X = pima_df[['NP', 'PGC', 'BMI', 'DP', 'AGE']].values
+    X = StandardScaler().fit_transform(X)
+    X = np.hstack([np.ones((X.shape[0], 1)), X])  # adding the intercept column
+    Y = pima_df[['class']].values.flatten()
+
+    return X, Y
