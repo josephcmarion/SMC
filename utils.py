@@ -93,7 +93,7 @@ def load_stan_model(directory, stan_file, model_code_file, model_code_text=None,
     parameters
     ----------
     directory: str
-        directory where the stan_file and model_text_file are found. Usually the location of the package
+        directory relative to the package where the stan_file and model_text_file are found. Usually the location of the package
     stan_file: str
         File name of the stan file. If the stan file does not exist, will pickle the model to directory/stan_file
     model_code_file: str
@@ -109,8 +109,9 @@ def load_stan_model(directory, stan_file, model_code_file, model_code_text=None,
         a stan model that will later be used in markov_kernel
     """
 
-    stan_file_name = os.path.join(directory, stan_file)
-    model_code_file_name = os.path.join(directory, model_code_file)
+    package = os.path.dirname(__file__)
+    stan_file_name = os.path.join(package, directory, stan_file)
+    model_code_file_name = os.path.join(package, directory, model_code_file)
 
     # load the stan model
     if os.path.exists(stan_file_name) and load:
