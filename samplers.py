@@ -198,8 +198,7 @@ class Sampler:
 
 class NormalSampler(Sampler):
 
-    def __init__(self, mean, covariance, directory='stan', stan_file='normal_model.stan',
-                 model_code_file='normal_model.txt', load=True):
+    def __init__(self, mean, covariance, load=True):
         """Sequential monte carlo sampler for a normal distribution with specified mean and variance
         Uses a tempered sequence of distributions for sampling. Markov kernels are done via nuts in STAN
 
@@ -212,12 +211,6 @@ class NormalSampler(Sampler):
 
         parameters
         ----------
-        directory: str
-            directory where the stan_file and model_text_file are found. Usually the location of the package
-        stan_file: str
-            File name of the stan file. If the stan file does not exist, will pickle the model to directory/stan_file
-        model_code_file: str
-            File name of the model text file.  Can be none if the stan file exists
         load:
             If true, attempts to load the model. If false, compiles the model
         """
@@ -227,7 +220,13 @@ class NormalSampler(Sampler):
         self.precision = np.linalg.inv(self.covariance)
 
         # load the stan model
-        self.stan_model = load_stan_model(directory, stan_file, model_code_file, self._stan_text_model(), load)
+        self.stan_model = load_stan_model(
+            'stan',
+            'normal_model.stan',
+            'normal_model.txt',
+            self._stan_text_model(),
+            load
+        )
 
         Sampler.__init__(self, self._log_pdf, self._initial_distribution, self._markov_kernel)
 
@@ -342,9 +341,7 @@ class NormalSampler(Sampler):
 
 class MultimodalNormalSampler(Sampler):
 
-    def __init__(self, means, scales, probability=0.5, dimension=2,
-                 directory='stan', stan_file='multimodal_normal_model.stan',
-                 model_code_file='multimodal_normal_model.txt', load=True):
+    def __init__(self, means, scales, probability=0.5, dimension=2, load=True):
         """Sequential monte carlo sampler for a mixture of two spherical normal distribution with specified mean and scales.
         A tempered sequence of distributions is used for sampling, beginning with a spherical normal.
         Markov kernels are done via nuts in STAN
@@ -362,12 +359,6 @@ class MultimodalNormalSampler(Sampler):
 
         parameters
         ----------
-        directory: str
-            directory where the stan_file and model_text_file are found. Usually the location of the package
-        stan_file: str
-            File name of the stan file. If the stan file does not exist, will pickle the model to directory/stan_file
-        model_code_file: str
-            File name of the model text file.  Can be none if the stan file exists
         load:
             If true, attempts to load the model. If false, compiles the model
         """
@@ -385,7 +376,13 @@ class MultimodalNormalSampler(Sampler):
         self.noise = stats.norm()
 
         # load the stan model
-        self.stan_model = load_stan_model(directory, stan_file, model_code_file, self._stan_text_model(), load)
+        self.stan_model = load_stan_model(
+            directory='stan',
+            stan_file='multimodal_normal_model.stan',
+            model_code_file='multimodal_normal_model.txt',
+            model_code_text=self._stan_text_model(),
+            load=load
+        )
 
         Sampler.__init__(self, self._log_pdf, self._initial_distribution, self._markov_kernel)
 
@@ -627,9 +624,7 @@ class MultimodalNormalSampler(Sampler):
 
 class NormalPathSampler(Sampler):
 
-    def __init__(self, mean1, mean2, covariance1, covariance2,
-                 directory='stan', stan_file='normal_path_model.stan',
-                 model_code_file='normal_path_model.txt', load=True):
+    def __init__(self, mean1, mean2, covariance1, covariance2, load=True):
         """ Sequential monte carlo sampler moving from one normal distribution to another via a tempered geometric mixture.
         Primarily used to test path sampling methods. Markov kernels are done via nuts in STAN
 
@@ -646,12 +641,6 @@ class NormalPathSampler(Sampler):
 
         parameters
         ----------
-        directory: str
-            directory where the stan_file and model_text_file are found. Usually the location of the package
-        stan_file: str
-            File name of the stan file. If the stan file does not exist, will pickle the model to directory/stan_file
-        model_code_file: str
-            File name of the model text file.  Can be none if the stan file exists
         load:
             If true, attempts to load the model. If false, compiles the model
         """
@@ -664,7 +653,13 @@ class NormalPathSampler(Sampler):
         self.precision2 = np.linalg.inv(covariance2)
 
         # load the stan model
-        self.stan_model = load_stan_model(directory, stan_file, model_code_file, self._stan_text_model(), load)
+        self.stan_model = load_stan_model(
+            directory='stan',
+            stan_file='normal_path_model.stan',
+            model_code_file='normal_path_model.txt',
+            model_code_text=self._stan_text_model(),
+            load=load
+        )
 
         Sampler.__init__(self, self._log_pdf, self._initial_distribution, self._markov_kernel)
 
@@ -1098,9 +1093,7 @@ class MeanFieldIsingSampler(Sampler):
 
 class LogisticRegressionSampler(Sampler):
 
-    def __init__(self, X, Y, prior_mean, prior_covariance,
-                 directory='stan', stan_file='logistic_regression.stan',
-                 model_code_file='logistic_regression.txt', load=True):
+    def __init__(self, X, Y, prior_mean, prior_covariance, load=True):
         """ SMC sampler for logistic regression. Moves from the prior to model of interest via a
         tempered geometric mixture. Markov kernels are done via nuts in STAN
 
@@ -1117,12 +1110,6 @@ class LogisticRegressionSampler(Sampler):
 
         parameters
         ----------
-        directory: str
-            directory where the stan_file and model_text_file are found. Usually the location of the package
-        stan_file: str
-            File name of the stan file. If the stan file does not exist, will pickle the model to directory/stan_file
-        model_code_file: str
-            File name of the model text file.  Can be none if the stan file exists
         load:
             If true, attempts to load the model. If false, compiles the model
         """
@@ -1134,7 +1121,13 @@ class LogisticRegressionSampler(Sampler):
         self.prior_precision = np.linalg.inv(prior_covariance)
 
         # load the stan model
-        self.stan_model = load_stan_model(directory, stan_file, model_code_file, self._stan_text_model(), load)
+        self.stan_model = load_stan_model(
+            directory='stan',
+            stan_file='logistic_regression.stan',
+            model_code_file='logistic_regression.txt',
+            model_code_text=self._stan_text_model(),
+            load=load
+        )
         Sampler.__init__(self, self._log_pdf, self._initial_distribution, self._markov_kernel)
 
     def _log_pdf(self, samples, params):
@@ -1316,9 +1309,7 @@ class LogisticRegressionSampler(Sampler):
 
 class LogisticPriorPathSampler(Sampler):
 
-    def __init__(self, X, Y, prior_mean, prior_covariance,
-                 directory='stan', stan_file='logistic_regression.stan',
-                 model_code_file='logistic_regression.txt', load=True):
+    def __init__(self, X, Y, prior_mean, prior_covariance, load=True):
         """ SMC sampler for logistic regression. Uses likelihood tempering in addition to a geometric mixture from a
         posterior approximation to the prior of interest. Posterior is approximated by a gaussian, whose mean and
         covariance are determines by maximum likelihood estimation. Markov kernels are done via nuts in STAN
@@ -1336,12 +1327,6 @@ class LogisticPriorPathSampler(Sampler):
 
         parameters
         ----------
-        directory: str
-            directory where the stan_file and model_text_file are found. Usually the location of the package
-        stan_file: str
-            File name of the stan file. If the stan file does not exist, will pickle the model to directory/stan_file
-        model_code_file: str
-            File name of the model text file.  Can be none if the stan file exists
         load:
             If true, attempts to load the model. If false, compiles the model
         """
@@ -1365,7 +1350,14 @@ class LogisticPriorPathSampler(Sampler):
         self.posterior_precision = np.linalg.inv(self.posterior_covariance)
 
         # load the stan model
-        self.stan_model = load_stan_model(directory, stan_file, model_code_file, self._stan_text_model(), load)
+        # load the stan model
+        self.stan_model = load_stan_model(
+            directory='stan',
+            stan_file='logistic_regression.stan',
+            model_code_file='logistic_regression.txt',
+            model_code_text=self._stan_text_model(),
+            load=load
+        )
         Sampler.__init__(self, self._log_pdf, self._initial_distribution, self._markov_kernel)
 
     def _get_normal_parameters(self, params):
