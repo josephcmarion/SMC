@@ -357,7 +357,8 @@ def load_pima_indians_data(file_name='data/pima_indians.csv'):
         'AGE',
         'class'
     ]
-    pima_df = read_csv(file_name, names=names)
+    directory = os.path.dirname(__file__)
+    pima_df = read_csv(os.path.join(directory, file_name), names=names)
 
     # prepare data
     # drop unnecessary columns
@@ -375,6 +376,3 @@ def load_pima_indians_data(file_name='data/pima_indians.csv'):
 
     return X, Y
 
-def test_path(directory, fname):
-    dir = os.path.dirname(__file__)
-    print os.path.join(dir, directory, fname)
