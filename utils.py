@@ -373,3 +373,7 @@ def load_pima_indians_data(file_name='data/pima_indians.csv'):
     Y = pima_df[['class']].values.flatten()
 
     return X, Y
+
+def test_path(directory, fname):
+    dir = os.path.dirname(__file__)
+    print os.path.join(dir, directory, fname)
