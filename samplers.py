@@ -731,7 +731,9 @@ class NormalPathSampler(Sampler):
         """
 
         # init some things
-        samples = stats.multivariate_normal(mean=self.mean1, cov=self.covariance1).rvs(N)
+        mean, precision, covariance = self._get_normal_parameters(params)
+        
+        samples = stats.multivariate_normal(mean=mean, cov=covariance).rvs(N)
 
         return samples
 
