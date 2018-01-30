@@ -1,11 +1,14 @@
 import numpy as np
 import scipy.stats as stats
 import GPy
-from samplers import NormalPathSampler, MeanFieldIsingSampler
-from utils import gaussian_kernel
+from networkx import DiGraph
+from networkx.algorithms.shortest_paths.generic import shortest_path
+from samplers import NormalPathSampler, MeanFieldIsingSampler, LogisticRegressionSampler, LogisticPriorPathSampler
+from utils import gaussian_kernel, unzip
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 from scipy.misc import comb
+from scipy.special import expit
 
 
 class PathEstimator:
@@ -26,6 +29,44 @@ class PathEstimator:
         self.scaler = None
         self.gps = []
         self.dependent = False
+        self.log_transform = False
+
+        # placeholder for the graph attributes
+        self.graph = None
+        self.offset = 0
+
+    def estimate_lambda(self, path, N, smc_kwargs={}):
+        """ estimates lambda, the log ratio of normalizing constants between the initial distribution
+         and the target distribution using a specified path. Uses the thermodynamic integration/path sampling
+         method described in Gelman and Meng (1998)
+
+        parameters
+        ----------
+        path: list of tuples
+            parameters used at each sampling step.
+        N: int
+            number of particles to use
+        smc_kwargs: dict
+            additional arguments to smc_step. For example, resampling_method or kernel_step
+
+        returns
+        -------
+        float:
+            the estimated log ratio of normalizing constants between the initial and
+            the target distributions
+        """
+
+        # do the sampling
+        output = self.sampling(path, N, smc_kwargs, save_all_samples=True)
+        sample_list = output[0]
+
+        # estimate the log ratio
+        potentials = np.array([self._potential(samples, params).mean(0) for samples, params in zip(sample_list, path)])
+        avg_potential = (potentials[1:] + potentials[:-1]) / 2.0
+        deltas = np.array(path)[1:] - np.array(path)[:-1]
+        lamda = (deltas * avg_potential).sum()
+
+        return lamda
 
     def _estimate_energy(self, samples, path):
         """ estimates the energy at each point in the path using output from the model.
@@ -50,11 +91,11 @@ class PathEstimator:
 
         for i, (x, params) in enumerate(zip(samples, path)):
             potential = self._potential(x, params)
-            energy[i] = np.cov(potential.T).reshape(self.Q,self.Q)[indices]
+            energy[i] = np.cov(potential.T).reshape(self.Q, self.Q)[indices]
 
         return energy
 
-    def fit_energy(self, samples_list, path_list, dependent=False):
+    def fit_energy(self, samples_list, path_list, dependent=False, log_transform=False, cutoff=None):
         """ fits gaussian process to estimate component energy at different parameter configurations.
         Uses samples and paths from various runs of self.sampling
 
@@ -66,14 +107,32 @@ class PathEstimator:
             a list of paths corresponding to the sample estimates
         dependent: boolean
             if true, uses PCA to fit dependent GPs.
+        log_transform: boolean
+            if true, log transforms the response prior to fitting the GP. This happens before using PCA.
+            Should not be used in conjunction with cutoff
+        cutoff: None or real>0
+            if not none, turns energy values over the cuttoff to be equal to cutoff (with their original sign)
         """
 
         # first, convert the samples and path into energy estimates and spatial coordinates
         self.dependent = dependent
-        self.gps = []
+        self.log_transform = log_transform
+        self.gps = []  # this will override previously fit gps
 
         xs = np.vstack(np.array(path_list))
         energy = np.vstack(map(lambda x, y: self._estimate_energy(x, y), samples_list, path_list))
+
+        # allows for pairing of really bad values
+        if cutoff is not None:
+            energy[np.abs(energy) > cutoff] = cutoff  # *np.sign(energy[np.abs(energy) > cutoff])
+
+        # log transform the response
+        if log_transform:
+            if (energy < 0.1).any():
+                print('''Warning: log transform cannot be used with negative energy function.
+                Setting negative values to epsilon''')
+                energy[energy < 0.1] = 1.0
+            energy = np.log(energy)
 
         # if necessary do scaling and PCA
         if self.dependent:
@@ -106,19 +165,287 @@ class PathEstimator:
             (M, Q) array of path parameters. Each row should correspond to a path parameter for the model
 
         """
-
-        # make sure the gps have been fit
-        if len(self.gps) == 0:
-            raise RuntimeError('''no trained gps present, run self.fit_energy''')
+        self._check_gps_fit()
 
         # predict
         predictions = np.array([gp.predict(param_array)[0].flatten() for gp in self.gps]).T
+
+        # transform back from dependent
         if self.dependent:
             predictions = self.scaler.inverse_transform(
                 self.pca.inverse_transform(predictions)
             )
 
+        # un-log transform
+        if self.log_transform:
+            predictions = np.exp(predictions)
+
         return predictions
+
+    def generate_weighted_graph(self, grids, directions, max_strides, offset=0.1):
+        """ creates a network x graph that can be used to find the lowest energy path from one point to another.
+        This graph becomes the attribute self.graph
+
+        parameters
+        ----------
+        grids: list of np.array
+            length Q list of arrays containing the placement of nodes along each axis
+        directions: list of str
+            length Q list describing the direction of possible connections for each dimension. Each element should
+            be either 'forward' (only moves to larger indices), 'backward' (only moves to smaller indices) or
+            'both' can move either forwards or backwards
+        max_strides: list of int
+            length Q list describing the maximum number of steps allowed in each dimension
+        offset: float
+            additional cost added to each step. prevents the path from taking really small steps
+        """
+
+        self._check_gps_fit()
+
+        # init some things
+        self.offset = offset
+        indices = [range(len(grid)) for grid in grids]
+        path = np.array(np.meshgrid(*grids)).reshape(len(grids), -1).T
+        predicted_energy = self.predict_energy(path)
+
+        # generate the edge list
+        nodes, edges_list = self._generate_edge_list(indices, directions, max_strides)
+
+        # create terrible maps, hope to find a better solution at some point
+        # also, convert everything to be a tuple for so it can be used in the graph package
+        nodes = [tuple(node) for node in nodes]
+        edges_list = [map(tuple, edges) for edges in edges_list]
+        node_to_energy = {node: energy for node, energy in zip(nodes, predicted_energy)}
+        node_to_params = {node: tuple(params) for node, params in zip(nodes, path)}
+
+        # add elements to graph
+        self.graph = DiGraph()
+        for node, edges in zip(nodes, edges_list):
+            for edge in edges:
+
+                u, v = node_to_params[node], node_to_params[edge]
+                cost_u, cost_v = node_to_energy[node], node_to_energy[edge]
+
+                cost = self._estimate_step_energy(u, v, cost_u, cost_v)
+                cost += offset
+
+                self.graph.add_edge(u, v, {'cost': cost})
+
+    def _find_shortest_path(self, start, stop):
+        """ wrapper for networkx. ... . shortest_path. Computes the shortest path across the network
+
+        parameters
+        ----------
+        start: tuple
+            params corresponding to the starting distribution
+        stop: tuple
+            params corresponding to the final distribution
+
+        returns
+        -------
+        list of tuples
+            params for the shortest path from the initial distribution to the target distribution
+        """
+        self._check_graph_generated()
+
+        return shortest_path(self.graph, start, stop, weight='cost')
+
+    def _create_uniform_path(self, start, stop, n_interpolate):
+        """ creates a path by linearly interpolating additional steps within the optimal path
+
+        parameters
+        ----------
+        start: tuple
+            params corresponding to the starting distribution
+        stop: tuple
+            params corresponding to the final distribution
+        n_interpolate: int
+            number of points to interpolate at each step. steps=1 returns the best path
+
+        returns
+        -------
+        list of tuples
+            params for the optimal path using the uniform step rule.
+        """
+
+        short_path = self._find_shortest_path(start, stop)
+        uniform_path = [short_path[0]]
+
+        for start, stop in zip(short_path[:-1], short_path[1:]):
+            params = []
+            for q in range(self.Q):
+                params.append(np.linspace(start[q], stop[q], n_interpolate + 1)[1:])
+
+            params = unzip(params)  # change the index to steps
+            params = map(tuple, params)  # change lists to tuples
+            uniform_path += params  # save the changes
+
+        return uniform_path
+
+    def _create_weighted_path(self, start, stop, steps):
+        """ finds the optimal path, then builds a new path by placing additional steps in sections with particularly
+        high variance.
+
+        parameters
+        ----------
+        start: tuple
+            params corresponding to the starting distribution
+        stop: tuple
+            params corresponding to the final distribution
+        steps: int
+            number of total SMC transitions to use. May not use exactly this many due to rounding
+
+        returns
+        -------
+        list of tuples
+            params for the optimal path using variance weighting.
+        """
+
+        # init some things
+        best_path = self._find_shortest_path(start, stop)
+        weighted_path = [best_path[0]]
+
+        # compute the weights
+        energy = self.predict_energy(np.array(best_path))
+        variances = np.array([self._estimate_step_energy(start, stop, start_e, stop_e)
+                              for start, stop, start_e, stop_e
+                              in zip(best_path[:-1], best_path[1:], energy[:-1], energy[1:])])
+        weights = variances / variances.sum() * steps
+
+        weights[weights < 1.0] = 1.0  # make sure each step gets at least 1 weight
+        weights = np.round(weights).astype(int)
+
+        # create the path
+        for start, stop, weight in zip(best_path[:-1], best_path[1:], weights):
+            params = []
+            for q in range(self.Q):
+                params.append(np.linspace(start[q], stop[q], weight + 1)[1:])
+
+            params = unzip(params)  # change the index to steps
+            params = map(tuple, params)  # change lists to tuples
+            weighted_path += params
+
+        return weighted_path
+
+    def update_offset(self, new_offset):
+        """ changes the offset added to the cost at each edge without recreating the graph.
+        Useful for testing the effect of different offset values without recreating the graph.
+
+        parameters
+        ----------
+        new_offset: float
+            cost added to the energy at each edge
+        """
+
+        self._check_graph_generated()
+
+        for edge in self.graph.edges_iter():
+            self.graph[edge[0]][edge[1]]['cost'] += new_offset - self.offset
+        self.offset = new_offset
+
+    @staticmethod
+    def _generate_edge_list(indices, directions, max_strides):
+        """ creates an array of nodes and corresponding edges for a directed graph structure specified by directions
+        and max_strides. This graph is the used for path learning. Can create graphs for paths of arbitrary dimension.
+
+        parameters
+        ----------
+        indices: list of np.array
+            length Q list where each element corresponds to one dimension. each element should be an array of integers
+            from 0 to the total number of elements in that direction
+        directions: list of str
+            length Q list describing the direction of possible connections for each dimension. Each element should
+            be either 'forward' (only moves to larger indices), 'backward' (only moves to smaller indices) or
+            'both' can move either forwards or backwards
+        max_strides: list of int
+            length Q list describing the maximmum number of steps allowed in each dimension
+
+        returns
+        -------
+        np.array
+            (#, Q) array of node indices
+        list of np.array
+            length # list of np.arrays. The i'th element of this list is an array containing the nodes that are
+            connected to the i'th element of the first array. This is terribly written.
+        """
+
+        # creates the list of all nodes
+        nodes = np.array(np.meshgrid(*indices)).reshape(len(indices), -1).T
+        edges_list = []
+        lengths = [len(index) for index in indices]
+
+        # create an edge_list for each node
+        for node in nodes:
+            # create list of possible moves
+            edges = []
+            for i, (index, length, direction, stride) in enumerate(zip(indices, lengths, directions, max_strides)):
+
+                # determine how far to move
+                # the 'default' here is the both option
+                min_index = max(0, node[i] - stride)
+                max_index = min(length, node[i] + stride + 1)
+
+                if direction == 'both':
+                    pass
+                elif direction == 'forward':
+                    min_index = max(0, node[i] + 1)
+                elif direction == 'backward':
+                    max_index = min(length, node[i])
+                else:
+                    raise ValueError('''Error in the {}-th direction.
+                    Must be 'forward', 'backward' or 'both' '''.format(i))
+
+                edges.append(range(min_index, max_index))
+            edges_list.append(np.array(np.meshgrid(*edges)).reshape(len(indices), -1).T)
+        return nodes, edges_list
+
+    @staticmethod
+    def _estimate_step_energy(start_params, stop_params, start_energy, stop_energy):
+        """ estimates the total energy used to move one set of params to another using a single step of quadriture
+
+        parameters
+        ----------
+        start_params: array-like
+            (Q, ) array of parameter values at the initial point
+        start_params: array-like
+            (Q, ) array of parameter values at the end point
+        start_energy: np.array
+            (Q, ) array of energy values at the initial point
+        stop_energy: np.array
+            (Q, ) array of energy values at the end point
+
+        returns
+        -------
+        float:
+            the energy required to make the transition from start_params to stop_params
+            in statistical terms, this is the variance of the estimator for this step of quadriture
+        """
+
+        # compute the change in step size along each parameter
+        deltas = []
+        for start, stop in zip(start_params, stop_params):
+            deltas.append(stop - start)
+
+        deltas = np.array(deltas)
+        indices = np.triu_indices(len(deltas))
+        deltas = deltas[indices[0]] * deltas[indices[1]]  # computes the squared change in each direction
+
+        avg_energy = (start_energy + stop_energy) / 2.0
+
+        return (deltas * avg_energy).sum()
+
+    def _check_graph_generated(self):
+        """ throws an error if the graph hasn't been generated """
+        if self.graph is None:
+            raise RuntimeError('''Graph has not been generated. Run {}.generate_weighted_graph
+                before running this function.'''.format(self.__class__.__name__))
+
+    def _check_gps_fit(self):
+        """ raises an error if the gps haven't been fit """
+        # make sure the gps have been fit
+        if len(self.gps) == 0:
+            raise RuntimeError('''GPS muse be trained before running this function. Run
+             {}.fit_energy'''.format(self.__class__.__name__))
 
 
 class NormalPathEstimator(PathEstimator, NormalPathSampler):
@@ -194,6 +521,15 @@ class NormalPathEstimator(PathEstimator, NormalPathSampler):
 
         return self._estimate_energy(samples, path)
 
+    def true_lambda(self):
+        """ returns the true log ratio of normalizing constants
+
+        returns
+        -------
+        float:
+            the true log ratio of normalizing constants
+        """
+        return 0.5*(np.linalg.slogdet(2*np.pi*self.covariance2)[1] - np.linalg.slogdet(2*np.pi*self.covariance1)[1])
 
 class IsingPathEstimator(PathEstimator, MeanFieldIsingSampler):
 
@@ -259,54 +595,122 @@ class IsingPathEstimator(PathEstimator, MeanFieldIsingSampler):
 
         return energies
 
-    def _true_probabilities(self, params):
-        """ returns the true probabilities of the total magnetism for a specified parameter setting
 
-        parameters
+class LogisticRegressionEstimator(PathEstimator, LogisticRegressionSampler):
+
+    def __init__(self, X, Y, prior_mean, prior_covariance):
+        """ Path sampling estimator for logistic regression. Moves from the prior to model of interest via a
+        tempered geometric mixture. Markov kernels are done via nuts in STAN
+
+        attributes
         ----------
-        params: tuple
-            first value is the inverse temperature parameter in [0,1]
-
-        returns
-        -------
-        np.array
-            (dimension+1,) array of magnetism from most negative to most positive
-        np.array
-            (dimension+1,) probabilities of each magnetism
+        X: np.array
+            (N, D) array of covariates, should include the intercept column of ones
+        Y: np.array
+            (N, ) vector of class labels in {0,1}^N
+        prior_mean: np.array
+            (D, ) vector of prior means
+        prior_covariance: np.array
+            (D, D) positive definite prior covariance matrix
         """
 
-        beta = params[0]
-        probabilities = np.zeros(self.dimension+1)
-        magnetism = np.zeros(self.dimension+1)
+        LogisticRegressionSampler.__init__(self, X, Y, prior_mean, prior_covariance)
+        PathEstimator.__init__(self, 2)
 
-        # compute probabilities
-        for d in range(self.dimension+1):
-            magnetism[d] = -self.dimension + 2*d
-            probabilities[d] = comb(self.dimension, d)*np.exp(beta*self.alpha / self.dimension * magnetism[d]**2)
-
-        # normalize
-        probabilities /= probabilities.sum()
-
-        return probabilities, magnetism
-
-    def _total_variation(self, samples, params):
-        """ returns the total variation distance between the empirical distribution and the true distribution
-        for a specified inverse temperature
+    def _potential(self, samples, params):
+        """ computes the potential w.r.t path parameters
 
         parameters
         ----------
         samples: np.array
-            (N, dimension) array of samples from a single step of sequential monte carlo
+            (N, D) array of samples
         params: tuple
-            first value is the inverse temperature parameter in [0,1]
+            likelihood inverse temperature in [0,1] and prior mixture parameter in [0,1]
 
-        returns
-        -------
-        float
-            total variation distance in (0,1). Smaller is better
+        return
+        ------
+        np.array
+            (N, 2) vector of potentials w.r.t the mixing parameter and inverse temperature parameter
         """
 
-        true_probabilities, magnetism = self._true_probabilities(params)
-        empirical_probabilities = np.array([(samples.sum(1) == m).mean() for m in magnetism])
+        beta, inverse_temperature = params
 
-        return np.abs(true_probabilities-empirical_probabilities).sum()/2.0
+        # log likelihood
+        mu = np.dot(samples, self.X.T)
+        pi = expit(mu)
+
+        # fix some numerical issues
+        pi[pi == 1.0] = 1.0 - 10 ** -6
+        pi[pi == 0.0] = 10 ** -6
+
+        log_likelihood = (self.Y * np.log(pi) + (1.0 - self.Y) * np.log(1.0 - pi)).sum(1)
+
+        # log prior
+        log_prior = -0.5 * gaussian_kernel(samples, self.prior_mean, self.prior_precision)
+
+        # compute potentials
+        potential_beta = inverse_temperature*log_likelihood
+        potential_temperature = beta*log_likelihood + log_prior
+
+        return np.vstack([potential_beta, potential_temperature]).T
+
+
+class LogisticPriorPathEstimator(PathEstimator, LogisticPriorPathSampler):
+
+    def __init__(self, X, Y, prior_mean, prior_covariance):
+        """ Path sampling estimator for logistic regression. Moves from the prior to model of interest via a
+        tempered geometric mixture. Markov kernels are done via nuts in STAN
+
+        attributes
+        ----------
+        X: np.array
+            (N, D) array of covariates, should include the intercept column of ones
+        Y: np.array
+            (N, ) vector of class labels in {0,1}^N
+        prior_mean: np.array
+            (D, ) vector of prior means
+        prior_covariance: np.array
+            (D, D) positive definite prior covariance matrix
+
+        """
+
+        LogisticPriorPathSampler.__init__(self, X, Y, prior_mean, prior_covariance)
+        PathEstimator.__init__(self, 2)
+
+    def _potential(self, samples, params):
+        """ computes the potential w.r.t path parameters
+
+        parameters
+        ----------
+        samples: np.array
+            (N, D) array of samples
+        params: tuple
+            first value is a mixing parameter in [0,1] second value is inverse temperature parameter in (0,1]
+
+        return
+        ------
+        np.array
+            (N, 2) vector of potentials w.r.t the mixing parameter and inverse temperature parameter
+        """
+
+        beta, alpha = params
+
+        # log likelihood
+        mu = np.dot(samples, self.X.T)
+        pi = expit(mu)
+
+        # fix some numerical issues
+        pi[pi == 1.0] = 1.0 - 10 ** -6
+        pi[pi == 0.0] = 10 ** -6
+
+        log_likelihood = (self.Y * np.log(pi) + (1.0 - self.Y) * np.log(1.0 - pi)).sum(1)
+
+        # log prior
+        log_prior = -0.5 * gaussian_kernel(samples, self.prior_mean, self.prior_precision)
+        log_posterior = -0.5 * gaussian_kernel(samples, self.posterior_mean, self.posterior_precision)
+
+        # compute potentials
+        potential_beta = log_likelihood
+        potential_alpha = log_prior + log_posterior
+
+        return np.vstack([potential_beta, potential_alpha]).T
