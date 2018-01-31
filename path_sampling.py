@@ -9,6 +9,8 @@ from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 from scipy.misc import comb
 from scipy.special import expit
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 
 class PathEstimator:
@@ -229,6 +231,10 @@ class PathEstimator:
                 cost = self._estimate_step_energy(u, v, cost_u, cost_v)
                 cost += offset
 
+                # vile hack
+                if cost<=0:
+                    cost=0
+
                 self.graph.add_edge(u, v, {'cost': cost})
 
     def _find_shortest_path(self, start, stop):
@@ -448,9 +454,207 @@ class PathEstimator:
              {}.fit_energy'''.format(self.__class__.__name__))
 
 
-class NormalPathEstimator(PathEstimator, NormalPathSampler):
+class GeometricTemperedEstimator(PathEstimator):
 
-    def __init__(self, mean1, mean2, covariance1, covariance2):
+    def __init__(self, temp_min, beta_spacing='linear', temp_spacing='linear'):
+        """ Path sampling class designed for geometric tempered mixtures. Provides wrappers that simplify the
+        training of the map, finding the optimal solution, and customized plotting features.
+
+        One possibly irritating feature of this class is that it assumes that the initial distribution can be sampled
+        from at any temperature, assuming that beta = 0. Might have to do some work to simplify this when that
+        constraint is not true.
+
+        Throughout this class, temperature generally refers to an inverse temperature in (0,1)
+
+        parameters
+        ----------
+        temp_min: float in (0,1)
+            the minimum temperature to consider
+        beta_spacing: str
+            denotes the kind of spacing to use for beta. Currently only supports 'linear'
+        temp_spacing: str
+            denotes the kind of spacing to use for the inverse temperature. Currently only supports 'linear'
+        """
+
+        self.temp_min = temp_min
+        self.beta_spacing = beta_spacing
+        self.temp_spacing = temp_spacing
+
+        PathEstimator.__init__(self, 2)
+
+    def _get_grid(self, n_beta, n_temperature):
+        """ right now this function doesn't do anything interesting, but eventually it will facilitate
+        using different (i.e. non-linear) spacing for the temperature
+
+        parameters
+        ----------
+        n_beta: int > 1
+            the number of beta settings on the grid
+        n_temperature: int > 1
+            the number of (inverse) temperature settings on the grid
+
+        returns
+        -------
+        np.array
+            beta values from 0 to 1, with the indicated spacing
+        np.array
+            temperature values from temp_min to 1, with the indicated spacing
+        """
+
+        if n_beta < 1.0:
+            raise ValueError("""n_beta must be an integer greater than 1 """)
+        if n_temperature < 1.0:
+            raise ValueError("""n_temperatures must be an integer greater than 1 """)
+
+        betas = None
+        if self.beta_spacing == 'linear':
+            betas = np.linspace(0, 1, n_beta)
+
+        temperatures = None
+        if self.temp_spacing == 'linear':
+            temperatures = np.linspace(self.temp_min, 1, n_temperature)
+
+        return betas, temperatures
+
+    def fit_energy_map(self, N, n_beta, n_temperature, gp_kwargs={}):
+        """ uses sequential monte carlo to estimate the variance of the thermodynamic integrator at a variety
+        of mixture/temperature combinations.
+
+        For now, the mixture constants and (inverse) temperature constants are spaced linearly between 0 (or temp_min)
+        and 1. Additional functionality should be added to incorporate a variety of logarithmic spacings.
+
+        n_temperature runs of SMC are used. Each run uses the beta path with constant (inverse) temperature.
+        After estimating the energy on the grid, GPs are fit to create the energy maps
+
+        parameters
+        ----------
+        N: int
+            number of samples to use during SMC
+        n_beta: int > 1
+            the number of beta settings on the grid
+        n_temperature: int > 1
+            the number of (inverse) temperature settings on the grid
+        gp_kwargs: dict
+            additional arguments to be passed to self.fit_energy(). i.e. log_transform, dependent, or cutoff.
+        """
+
+        # generate the grids
+        betas, temperatures = self._get_grid(n_beta, n_temperature)
+
+        # init some things
+        samples_list = []
+        path_list = []
+
+        # conduct the sampling
+        for temp in temperatures:
+            print '\nSMC with inverse temperature: {0:.2f}'.format(temp)
+
+            path = [(beta, temp) for beta in betas]
+            samples = self.sampling(path, N)[0]
+
+            path_list.append(path)
+            samples_list.append(samples)
+
+        # fit the GPs
+        self.fit_energy(samples_list, path_list, **gp_kwargs)
+
+    def uniform_path(self, n_interpolate=1):
+        """ finds the optimal path via grid search. adds n_interpolating points between each vertex of the path
+        via linear interpolation
+
+        parameters
+        ----------
+        n_interpolate: int
+            number of points to interpolate at each step. steps=1 returns the best path
+
+        returns
+        -------
+        list of tuples
+            params for the optimal path using uniform interpolation
+        """
+        return self._create_uniform_path((0.0, 1.0), (1.0, 1.0), n_interpolate)
+
+    def weighted_path(self, steps):
+        """ finds the optimal path via grid search. places additional points along the path, weighting
+        allocating a number of steps to each section proportional to it's variance
+
+        parameters
+        ----------
+        steps: int
+            number of total SMC transitions to use. May not use exactly this many due to rounding
+
+        returns
+        -------
+        list of tuples
+            params for the optimal path using variance weighting.
+
+        """
+        return self._create_weighted_path((0.0, 1.0), (1.0, 1.0), steps)
+
+    @staticmethod
+    def linear_path(steps):
+        """ this is the linear geometric path, with no tempering
+
+         parameters
+        ----------
+        steps: int
+            number of total SMC transitions to use.
+
+        returns
+        -------
+        list of tuples
+            params for the optimal path using variance weighting.
+
+        """
+        return [(beta, 1.0) for beta in np.linspace(0, 1, steps)]
+
+    def plot_energy_map(self, plot_kwargs=[{}]*3):
+        """ plots the estimated energy map for the sampler on each of the three dimensions
+
+        parameters
+        ----------
+        plot_kwargs: list of dict
+            length three dictionary, each containing arguments to be passed to a subplot
+        """
+
+        # I might add this as an argument but it seems clumsy
+        n_beta, n_temperature = 101, 101
+
+        # create grids and estimate energy
+        betas, temperatures = self._get_grid(n_beta, n_temperature)
+        path_array = np.array(map(lambda x: x.flatten(), np.meshgrid(betas, temperatures))).T
+        predicted_energy = self.predict_energy(path_array).reshape(101, n_beta, 3)
+
+        # setup some stuff for the axis and titles
+        beta_locs = np.linspace(0, n_beta, 11).astype(int)[:-1]
+        beta_labels = ['{0:.1f}'.format(beta) for beta in betas[beta_locs]]
+
+        temp_locs = np.linspace(0, n_temperature, 11).astype(int)[:-1]
+        temp_labels = ['{0:.1f}'.format(temp) for temp in temperatures[temp_locs]]
+
+        titles = [
+            r'$\beta -\beta$ path variance',
+            r'$\beta -t$ path variance',
+            r'$t -t$ path variance'
+        ]
+
+        # do the plotting
+        plt.rcParams['figure.figsize'] = 15, 3
+        cmap = sns.cubehelix_palette(as_cmap=True)
+        for q in range(3):
+            plt.subplot(1, 3, q + 1)
+            sns.heatmap(predicted_energy[:, :, q][::-1], cmap=cmap, vmin=0, **plot_kwargs[q])
+            plt.xticks(beta_locs, beta_labels)
+            plt.xlabel(r'$\beta$')
+
+            plt.yticks(temp_locs, temp_labels)
+            plt.ylabel(r'$t$')
+            plt.title(titles[q])
+
+
+class NormalPathEstimator(GeometricTemperedEstimator, NormalPathSampler):
+
+    def __init__(self, mean1, mean2, covariance1, covariance2, temp_min=0.01):
         """Path sampling module for the geometric-tempered D-dimensional normal. Inherits SMC sampling routines from
         smc.samplers.NormalPathSampler
 
@@ -464,10 +668,12 @@ class NormalPathEstimator(PathEstimator, NormalPathSampler):
             (D,D) positive definite covariance matrix for the initial distribution
         covariance2:  np.array
             (D,D) positive definite covariance matrix for the initial distribution
+        temp_min: float in (0,1)
+            the minimum temperature to consider
         """
 
         NormalPathSampler.__init__(self, mean1, mean2, covariance1, covariance2)
-        PathEstimator.__init__(self, 2)
+        GeometricTemperedEstimator.__init__(self, temp_min=temp_min)
 
     def _potential(self, samples, params):
         """ computes the potential w.r.t path parameters
@@ -521,6 +727,52 @@ class NormalPathEstimator(PathEstimator, NormalPathSampler):
 
         return self._estimate_energy(samples, path)
 
+    def plot_true_energy_map(self, N=10**3, plot_kwargs=[{}]*3):
+        """ plots the estimated energy map for the sampler on each of the three dimensions.
+        Uses a large number of independent gaussian samples to estimate the true energy
+
+        parameters
+        ----------
+        N: int
+            number of samples to use in estimation
+        plot_kwargs: list of dict
+            length three dictionary, each containing arguments to be passed to a subplot
+        """
+
+        # I might add this as an argument but it seems clumsy
+        n_beta, n_temperature = 101, 101
+
+        # create grids and estimate energy
+        betas, temperatures = self._get_grid(n_beta, n_temperature)
+        path_array = np.array(map(lambda x: x.flatten(), np.meshgrid(betas, temperatures))).T
+        true_energy = self._true_energy(path_array, N).reshape(n_temperature, n_beta, 3)
+
+        # setup some stuff for the axis and titles
+        beta_locs = np.linspace(0, n_beta, 11).astype(int)[:-1]
+        beta_labels = ['{0:.1f}'.format(beta) for beta in betas[beta_locs]]
+
+        temp_locs = np.linspace(0, n_temperature, 11).astype(int)[:-1]
+        temp_labels = ['{0:.1f}'.format(temp) for temp in temperatures[temp_locs]]
+
+        titles = [
+            r'True $\beta -\beta$ path variance',
+            r'True $\beta -t$ path variance',
+            r'True $t -t$ path variance'
+        ]
+
+        # do the plotting
+        plt.rcParams['figure.figsize'] = 15, 3
+        cmap = sns.cubehelix_palette(as_cmap=True)
+        for q in range(3):
+            plt.subplot(1, 3, q + 1)
+            sns.heatmap(true_energy[:, :, q][::-1], cmap=cmap, vmin=0, **plot_kwargs[q])
+            plt.xticks(beta_locs, beta_labels)
+            plt.xlabel(r'$\beta$')
+
+            plt.yticks(temp_locs, temp_labels)
+            plt.ylabel(r'$t$')
+            plt.title(titles[q])
+
     def true_lambda(self):
         """ returns the true log ratio of normalizing constants
 
@@ -530,6 +782,7 @@ class NormalPathEstimator(PathEstimator, NormalPathSampler):
             the true log ratio of normalizing constants
         """
         return 0.5*(np.linalg.slogdet(2*np.pi*self.covariance2)[1] - np.linalg.slogdet(2*np.pi*self.covariance1)[1])
+
 
 class IsingPathEstimator(PathEstimator, MeanFieldIsingSampler):
 
