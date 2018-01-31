@@ -15,27 +15,68 @@ import seaborn as sns
 
 class PathEstimator:
 
-    def __init__(self, Q):
-        """I'm not totally sure what this class will do but I think it makes sense as a class
+    def __init__(self, Q, grid_mins, grid_maxs, grid_types):
+        """ Class that does map estimation and path sampling. Not documented because I'm not sure what it does yet.
 
         parameters
         ----------
         Q: int
-            dimension of the potential
+            dimension of the path space
+        grid_mins: array-like
+            the minimum parameter value in each of the Q dimensions
+        grid_maxs: array-like
+            the maximum parameter value in each of the Q dimensions
+        grid_types: list of str
+            the type of spacing to using in each path dimension. Must be either 'linear', 'log-increasing', or
+            'log-decreasing'
         """
 
         self.Q = Q
+
+        # arguments that have to do with grids
+        self.grid_mins = grid_mins
+        self.grid_maxs = grid_maxs
+        self.grid_types = grid_types
+        self._check_grid_type()  # raises an error if improper types have been specified
 
         # place holder stuff for the GP regression
         self.pca = None
         self.scaler = None
         self.gps = []
         self.dependent = False
-        self.log_transform = False
+        self.log_transforms = []
 
         # placeholder for the graph attributes
         self.graph = None
         self.offset = 0
+
+    def _get_grids(self, grid_sizes):
+        """ creates custom grids that are specified during initialization. These are used for fitting the energy map,
+        establishing the graph, determining the shortest path, and plotting functions
+
+        parameters
+        ----------
+        grid_sizes: list of int
+            the size of the grid along each dimension
+
+        returns
+        -------
+        list of np.array
+            pre-specified grid in each dimension of length n
+        """
+
+        grids = []
+        for size, grid_min, grid_max, grid_type in zip(grid_sizes, self.grid_mins, self.grid_maxs, self.grid_types):
+
+            if grid_type == 'linear':
+                grids.append(np.linspace(grid_min, grid_max, size))
+            # todo: fill out these options
+            elif grid_type == 'log-decreasing':
+                pass
+            elif grid_type == 'log-increasing':
+                pass
+
+        return grids
 
     def estimate_lambda(self, path, N, smc_kwargs={}):
         """ estimates lambda, the log ratio of normalizing constants between the initial distribution
@@ -97,7 +138,7 @@ class PathEstimator:
 
         return energy
 
-    def fit_energy(self, samples_list, path_list, dependent=False, log_transform=False, cutoff=None):
+    def fit_energy(self, samples_list, path_list, dependent=False, log_transforms=None, cutoff=None):
         """ fits gaussian process to estimate component energy at different parameter configurations.
         Uses samples and paths from various runs of self.sampling
 
@@ -109,16 +150,17 @@ class PathEstimator:
             a list of paths corresponding to the sample estimates
         dependent: boolean
             if true, uses PCA to fit dependent GPs.
-        log_transform: boolean
-            if true, log transforms the response prior to fitting the GP. This happens before using PCA.
-            Should not be used in conjunction with cutoff
+        log_transforms: list of boolean
+            for each path dimension, if true, log transforms the response prior to fitting the GP.
+            This happens before using PCA. Should not be used in conjunction with cutoff. Use with PCA is
+            experimental.
         cutoff: None or real>0
             if not none, turns energy values over the cuttoff to be equal to cutoff (with their original sign)
         """
 
         # first, convert the samples and path into energy estimates and spatial coordinates
         self.dependent = dependent
-        self.log_transform = log_transform
+        self.log_transforms = log_transforms
         self.gps = []  # this will override previously fit gps
 
         xs = np.vstack(np.array(path_list))
@@ -129,12 +171,18 @@ class PathEstimator:
             energy[np.abs(energy) > cutoff] = cutoff  # *np.sign(energy[np.abs(energy) > cutoff])
 
         # log transform the response
-        if log_transform:
-            if (energy < 0.1).any():
-                print('''Warning: log transform cannot be used with negative energy function.
-                Setting negative values to epsilon''')
-                energy[energy < 0.1] = 1.0
-            energy = np.log(energy)
+        self.log_transforms=log_transforms
+        if log_transforms is None:
+            self.log_transforms = self.Q*[False]
+
+        for q, log_transform in enumerate(self.log_transforms):
+            if log_transform:
+                if (energy < 0.1).any():
+                    print('''Warning: log transform cannot be used with negative energy function.
+                    Setting negative values to epsilon''')
+                    energy[energy[:, q] < 0.1, q] = 0.001
+                energy[:, q] = np.log(energy[:, q])
+                print 'Transforming the {}-th coordinate'.format(q)
 
         # if necessary do scaling and PCA
         if self.dependent:
@@ -179,19 +227,20 @@ class PathEstimator:
             )
 
         # un-log transform
-        if self.log_transform:
-            predictions = np.exp(predictions)
+        for q, log_transform in zip(range(self.Q), self.log_transforms):
+            if log_transform:
+                predictions[:, q] = np.exp(predictions[:, q])
 
         return predictions
 
-    def generate_weighted_graph(self, grids, directions, max_strides, offset=0.1):
+    def generate_weighted_graph(self, grid_sizes, directions, max_strides, offset=0.1):
         """ creates a network x graph that can be used to find the lowest energy path from one point to another.
         This graph becomes the attribute self.graph
 
         parameters
         ----------
-        grids: list of np.array
-            length Q list of arrays containing the placement of nodes along each axis
+        grid_sizes: list of int
+            the size of the grid along each dimension
         directions: list of str
             length Q list describing the direction of possible connections for each dimension. Each element should
             be either 'forward' (only moves to larger indices), 'backward' (only moves to smaller indices) or
@@ -206,8 +255,9 @@ class PathEstimator:
 
         # init some things
         self.offset = offset
-        indices = [range(len(grid)) for grid in grids]
-        path = np.array(np.meshgrid(*grids)).reshape(len(grids), -1).T
+        grids = self._get_grids(grid_sizes)
+        indices = [range(size) for size in grid_sizes]
+        path = np.array(np.meshgrid(*grids)).reshape(self.Q, -1).T
         predicted_energy = self.predict_energy(path)
 
         # generate the edge list
@@ -232,10 +282,117 @@ class PathEstimator:
                 cost += offset
 
                 # vile hack
-                if cost<=0:
-                    cost=0
+                if cost <= 0:
+                    cost = 0
 
                 self.graph.add_edge(u, v, {'cost': cost})
+
+    @staticmethod
+    def _generate_edge_list(indices, directions, max_strides):
+        """ creates an array of nodes and corresponding edges for a directed graph structure specified by directions
+        and max_strides. This graph is the used for path learning. Can create graphs for paths of arbitrary dimension.
+
+        parameters
+        ----------
+        indices: list of np.array
+            length Q list where each element corresponds to one dimension. each element should be an array of integers
+            from 0 to the total number of elements in that direction
+        directions: list of str
+            length Q list describing the direction of possible connections for each dimension. Each element should
+            be either 'forward' (only moves to larger indices), 'backward' (only moves to smaller indices) or
+            'both' can move either forwards or backwards
+        max_strides: list of int
+            length Q list describing the maximmum number of steps allowed in each dimension
+
+        returns
+        -------
+        np.array
+            (#, Q) array of node indices
+        list of np.array
+            length # list of np.arrays. The i'th element of this list is an array containing the nodes that are
+            connected to the i'th element of the first array. This is terribly written.
+        """
+
+        # creates the list of all nodes
+        nodes = np.array(np.meshgrid(*indices)).reshape(len(indices), -1).T
+        edges_list = []
+        lengths = [len(index) for index in indices]
+
+        # create an edge_list for each node
+        for node in nodes:
+            # create list of possible moves
+            edges = []
+            for i, (index, length, direction, stride) in enumerate(zip(indices, lengths, directions, max_strides)):
+
+                # determine how far to move
+                # the 'default' here is the both option
+                min_index = max(0, node[i] - stride)
+                max_index = min(length, node[i] + stride + 1)
+
+                if direction == 'both':
+                    pass
+                elif direction == 'forward':
+                    min_index = max(0, node[i] + 1)
+                elif direction == 'backward':
+                    max_index = min(length, node[i])
+                else:
+                    raise ValueError('''Error in the {}-th direction.
+                    Must be 'forward', 'backward' or 'both' '''.format(i))
+
+                edges.append(range(min_index, max_index))
+            edges_list.append(np.array(np.meshgrid(*edges)).reshape(len(indices), -1).T)
+        return nodes, edges_list
+
+    @staticmethod
+    def _estimate_step_energy(start_params, stop_params, start_energy, stop_energy):
+        """ estimates the total energy used to move one set of params to another using a single step of quadriture
+
+        parameters
+        ----------
+        start_params: array-like
+            (Q, ) array of parameter values at the initial point
+        start_params: array-like
+            (Q, ) array of parameter values at the end point
+        start_energy: np.array
+            (Q, ) array of energy values at the initial point
+        stop_energy: np.array
+            (Q, ) array of energy values at the end point
+
+        returns
+        -------
+        float:
+            the energy required to make the transition from start_params to stop_params
+            in statistical terms, this is the variance of the estimator for this step of quadriture
+        """
+
+        # compute the change in step size along each parameter
+        deltas = []
+        for start, stop in zip(start_params, stop_params):
+            deltas.append(stop - start)
+
+        deltas = np.array(deltas)
+        indices = np.triu_indices(len(deltas))
+        deltas = deltas[indices[0]] * deltas[indices[1]]  # computes the squared change in each direction
+
+        avg_energy = (start_energy + stop_energy) / 2.0
+
+        return (deltas * avg_energy).sum()
+
+    def update_offset(self, new_offset):
+        """ changes the offset added to the cost at each edge without recreating the graph.
+        Useful for testing the effect of different offset values without recreating the graph.
+
+        parameters
+        ----------
+        new_offset: float
+            cost added to the energy at each edge
+        """
+
+        self._check_graph_generated()
+
+        for edge in self.graph.edges_iter():
+            self.graph[edge[0]][edge[1]]['cost'] += new_offset - self.offset
+        self.offset = new_offset
 
     def _find_shortest_path(self, start, stop):
         """ wrapper for networkx. ... . shortest_path. Computes the shortest path across the network
@@ -333,113 +490,6 @@ class PathEstimator:
 
         return weighted_path
 
-    def update_offset(self, new_offset):
-        """ changes the offset added to the cost at each edge without recreating the graph.
-        Useful for testing the effect of different offset values without recreating the graph.
-
-        parameters
-        ----------
-        new_offset: float
-            cost added to the energy at each edge
-        """
-
-        self._check_graph_generated()
-
-        for edge in self.graph.edges_iter():
-            self.graph[edge[0]][edge[1]]['cost'] += new_offset - self.offset
-        self.offset = new_offset
-
-    @staticmethod
-    def _generate_edge_list(indices, directions, max_strides):
-        """ creates an array of nodes and corresponding edges for a directed graph structure specified by directions
-        and max_strides. This graph is the used for path learning. Can create graphs for paths of arbitrary dimension.
-
-        parameters
-        ----------
-        indices: list of np.array
-            length Q list where each element corresponds to one dimension. each element should be an array of integers
-            from 0 to the total number of elements in that direction
-        directions: list of str
-            length Q list describing the direction of possible connections for each dimension. Each element should
-            be either 'forward' (only moves to larger indices), 'backward' (only moves to smaller indices) or
-            'both' can move either forwards or backwards
-        max_strides: list of int
-            length Q list describing the maximmum number of steps allowed in each dimension
-
-        returns
-        -------
-        np.array
-            (#, Q) array of node indices
-        list of np.array
-            length # list of np.arrays. The i'th element of this list is an array containing the nodes that are
-            connected to the i'th element of the first array. This is terribly written.
-        """
-
-        # creates the list of all nodes
-        nodes = np.array(np.meshgrid(*indices)).reshape(len(indices), -1).T
-        edges_list = []
-        lengths = [len(index) for index in indices]
-
-        # create an edge_list for each node
-        for node in nodes:
-            # create list of possible moves
-            edges = []
-            for i, (index, length, direction, stride) in enumerate(zip(indices, lengths, directions, max_strides)):
-
-                # determine how far to move
-                # the 'default' here is the both option
-                min_index = max(0, node[i] - stride)
-                max_index = min(length, node[i] + stride + 1)
-
-                if direction == 'both':
-                    pass
-                elif direction == 'forward':
-                    min_index = max(0, node[i] + 1)
-                elif direction == 'backward':
-                    max_index = min(length, node[i])
-                else:
-                    raise ValueError('''Error in the {}-th direction.
-                    Must be 'forward', 'backward' or 'both' '''.format(i))
-
-                edges.append(range(min_index, max_index))
-            edges_list.append(np.array(np.meshgrid(*edges)).reshape(len(indices), -1).T)
-        return nodes, edges_list
-
-    @staticmethod
-    def _estimate_step_energy(start_params, stop_params, start_energy, stop_energy):
-        """ estimates the total energy used to move one set of params to another using a single step of quadriture
-
-        parameters
-        ----------
-        start_params: array-like
-            (Q, ) array of parameter values at the initial point
-        start_params: array-like
-            (Q, ) array of parameter values at the end point
-        start_energy: np.array
-            (Q, ) array of energy values at the initial point
-        stop_energy: np.array
-            (Q, ) array of energy values at the end point
-
-        returns
-        -------
-        float:
-            the energy required to make the transition from start_params to stop_params
-            in statistical terms, this is the variance of the estimator for this step of quadriture
-        """
-
-        # compute the change in step size along each parameter
-        deltas = []
-        for start, stop in zip(start_params, stop_params):
-            deltas.append(stop - start)
-
-        deltas = np.array(deltas)
-        indices = np.triu_indices(len(deltas))
-        deltas = deltas[indices[0]] * deltas[indices[1]]  # computes the squared change in each direction
-
-        avg_energy = (start_energy + stop_energy) / 2.0
-
-        return (deltas * avg_energy).sum()
-
     def _check_graph_generated(self):
         """ throws an error if the graph hasn't been generated """
         if self.graph is None:
@@ -453,10 +503,18 @@ class PathEstimator:
             raise RuntimeError('''GPS muse be trained before running this function. Run
              {}.fit_energy'''.format(self.__class__.__name__))
 
+    def _check_grid_type(self):
+        """ raises an error if the grid types are misspecified """
+        good_types = ['linear', 'log-increasing', 'log-decreasing']
+        for grid in self.grid_types:
+            if grid not in good_types:
+                raise ValueError(''' grid types must be either 'linear', 'log-increasing', or 'log-decreasing'.
+                 Check initialization of {}'''.format(self.__class__.__name__))
+
 
 class GeometricTemperedEstimator(PathEstimator):
 
-    def __init__(self, temp_min, beta_spacing='linear', temp_spacing='linear'):
+    def __init__(self, min_temp=0.01, beta_grid_type='linear', temp_grid_type='linear'):
         """ Path sampling class designed for geometric tempered mixtures. Provides wrappers that simplify the
         training of the map, finding the optimal solution, and customized plotting features.
 
@@ -468,53 +526,16 @@ class GeometricTemperedEstimator(PathEstimator):
 
         parameters
         ----------
-        temp_min: float in (0,1)
+        min_temp: float in (0,1)
             the minimum temperature to consider
-        beta_spacing: str
+        beta_grid_type: str
             denotes the kind of spacing to use for beta. Currently only supports 'linear'
-        temp_spacing: str
+        temp_grid_type: str
             denotes the kind of spacing to use for the inverse temperature. Currently only supports 'linear'
         """
 
-        self.temp_min = temp_min
-        self.beta_spacing = beta_spacing
-        self.temp_spacing = temp_spacing
-
-        PathEstimator.__init__(self, 2)
-
-    def _get_grid(self, n_beta, n_temperature):
-        """ right now this function doesn't do anything interesting, but eventually it will facilitate
-        using different (i.e. non-linear) spacing for the temperature
-
-        parameters
-        ----------
-        n_beta: int > 1
-            the number of beta settings on the grid
-        n_temperature: int > 1
-            the number of (inverse) temperature settings on the grid
-
-        returns
-        -------
-        np.array
-            beta values from 0 to 1, with the indicated spacing
-        np.array
-            temperature values from temp_min to 1, with the indicated spacing
-        """
-
-        if n_beta < 1.0:
-            raise ValueError("""n_beta must be an integer greater than 1 """)
-        if n_temperature < 1.0:
-            raise ValueError("""n_temperatures must be an integer greater than 1 """)
-
-        betas = None
-        if self.beta_spacing == 'linear':
-            betas = np.linspace(0, 1, n_beta)
-
-        temperatures = None
-        if self.temp_spacing == 'linear':
-            temperatures = np.linspace(self.temp_min, 1, n_temperature)
-
-        return betas, temperatures
+        self.temp_min = min_temp
+        PathEstimator.__init__(self, 2, [0.0, min_temp], [1.0, 1.0], [beta_grid_type, temp_grid_type])
 
     def fit_energy_map(self, N, n_beta, n_temperature, gp_kwargs={}):
         """ uses sequential monte carlo to estimate the variance of the thermodynamic integrator at a variety
@@ -539,7 +560,7 @@ class GeometricTemperedEstimator(PathEstimator):
         """
 
         # generate the grids
-        betas, temperatures = self._get_grid(n_beta, n_temperature)
+        betas, temperatures = self._get_grids([n_beta, n_temperature])
 
         # init some things
         samples_list = []
@@ -621,7 +642,7 @@ class GeometricTemperedEstimator(PathEstimator):
         n_beta, n_temperature = 101, 101
 
         # create grids and estimate energy
-        betas, temperatures = self._get_grid(n_beta, n_temperature)
+        betas, temperatures = self._get_grids([n_beta, n_temperature])
         path_array = np.array(map(lambda x: x.flatten(), np.meshgrid(betas, temperatures))).T
         predicted_energy = self.predict_energy(path_array).reshape(101, n_beta, 3)
 
@@ -652,9 +673,25 @@ class GeometricTemperedEstimator(PathEstimator):
             plt.title(titles[q])
 
 
+class GeometricPathEstimator(PathEstimator):
+
+    def __init__(self, grid_type='linear'):
+        """ Path sampling class designed for geometric mixtures. Provides wrappers that simplify the
+        training of the map, finding the optimal solution, and customized plotting features.
+
+
+        parameters
+        ----------
+        grid_type: str
+            denotes the kind of spacing to use for beta. Currently only supports 'linear'
+        """
+
+        PathEstimator.__init(1, [0], [1], [grid_type])
+
+
 class NormalPathEstimator(GeometricTemperedEstimator, NormalPathSampler):
 
-    def __init__(self, mean1, mean2, covariance1, covariance2, temp_min=0.01):
+    def __init__(self, mean1, mean2, covariance1, covariance2, path_sampler_kwargs={}):
         """Path sampling module for the geometric-tempered D-dimensional normal. Inherits SMC sampling routines from
         smc.samplers.NormalPathSampler
 
@@ -668,12 +705,13 @@ class NormalPathEstimator(GeometricTemperedEstimator, NormalPathSampler):
             (D,D) positive definite covariance matrix for the initial distribution
         covariance2:  np.array
             (D,D) positive definite covariance matrix for the initial distribution
-        temp_min: float in (0,1)
-            the minimum temperature to consider
+        path_sampler_kwargs: dict
+            additional arguments to be passed to GeometricTemperedEstimator. options inclue
+            min_temp, beta_spacing and
         """
 
         NormalPathSampler.__init__(self, mean1, mean2, covariance1, covariance2)
-        GeometricTemperedEstimator.__init__(self, temp_min=temp_min)
+        GeometricTemperedEstimator.__init__(self, **path_sampler_kwargs)
 
     def _potential(self, samples, params):
         """ computes the potential w.r.t path parameters
@@ -743,7 +781,7 @@ class NormalPathEstimator(GeometricTemperedEstimator, NormalPathSampler):
         n_beta, n_temperature = 101, 101
 
         # create grids and estimate energy
-        betas, temperatures = self._get_grid(n_beta, n_temperature)
+        betas, temperatures = self._get_grids([n_beta, n_temperature])
         path_array = np.array(map(lambda x: x.flatten(), np.meshgrid(betas, temperatures))).T
         true_energy = self._true_energy(path_array, N).reshape(n_temperature, n_beta, 3)
 
@@ -784,9 +822,9 @@ class NormalPathEstimator(GeometricTemperedEstimator, NormalPathSampler):
         return 0.5*(np.linalg.slogdet(2*np.pi*self.covariance2)[1] - np.linalg.slogdet(2*np.pi*self.covariance1)[1])
 
 
-class IsingPathEstimator(PathEstimator, MeanFieldIsingSampler):
+class IsingPathEstimator(GeometricPathEstimator, MeanFieldIsingSampler):
 
-    def __init__(self, dimension, alpha):
+    def __init__(self, dimension, alpha, path_sampler_kwargs={}):
         """ Path sampling estimator for the ising model. Uses a tempered path from the uniform distribution
         to the distribution of interest.
 
@@ -796,10 +834,15 @@ class IsingPathEstimator(PathEstimator, MeanFieldIsingSampler):
             the number of sites/nodes in the graph
         alpha: float > 0
             the temperature of the model, determining the behaviour
+
+        parameters
+        ----------
+        path_sampler_kwargs: dict
+            arguments to be passed to GeometricPathEstimator, generally just 'grid_type'
         """
 
         MeanFieldIsingSampler.__init__(self, dimension, alpha)
-        PathEstimator.__init__(self, 1)
+        GeometricPathEstimator.__init__(self, **path_sampler_kwargs)
 
     def _potential(self, samples, params):
         """ computes the potential w.r.t path parameters
