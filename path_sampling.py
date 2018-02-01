@@ -539,7 +539,12 @@ class GeometricTemperedEstimator(PathEstimator):
         self.temp_min = min_temp
         PathEstimator.__init__(self, 2, [0.0, min_temp], [1.0, 1.0], [beta_grid_type, temp_grid_type])
 
-    def fit_energy_map(self, N, n_beta, n_temperature, gp_kwargs={}, smc_kwargs=False, verbose=True):
+        # this is a hacky way to make the paths, but it saves a lot of space
+        self.uniform_path = lambda x: self._create_uniform_path((0.0, 1.0), (1.0, 1.0), x)
+        self.weighted_path = lambda x: self._create_weighted_path((0.0, 1.0), (1.0, 1.0), x)
+        self.linear_path = lambda x: [(beta, 1.0) for beta in np.linspace(0, 1, x)]
+
+    def fit_energy_map(self, N, n_beta, n_temperature, gp_kwargs={}, smc_kwargs={}, verbose=True):
         """ uses sequential monte carlo to estimate the variance of the thermodynamic integrator at a variety
         of mixture/temperature combinations.
 
@@ -577,63 +582,13 @@ class GeometricTemperedEstimator(PathEstimator):
             print '\nSMC with inverse temperature: {0:.2f}'.format(temp)
 
             path = [(beta, temp) for beta in betas]
-            samples = self.sampling(path, N, smc_kwargs={}, verbose=verbose)[0]
+            samples = self.sampling(path, N, smc_kwargs=smc_kwargs, verbose=verbose)[0]
 
             path_list.append(path)
             samples_list.append(samples)
 
         # fit the GPs
         self.fit_energy(samples_list, path_list, **gp_kwargs)
-
-    def uniform_path(self, n_interpolate=1):
-        """ finds the optimal path via grid search. adds n_interpolating points between each vertex of the path
-        via linear interpolation
-
-        parameters
-        ----------
-        n_interpolate: int
-            number of points to interpolate at each step. steps=1 returns the best path
-
-        returns
-        -------
-        list of tuples
-            params for the optimal path using uniform interpolation
-        """
-        return self._create_uniform_path((0.0, 1.0), (1.0, 1.0), n_interpolate)
-
-    def weighted_path(self, steps):
-        """ finds the optimal path via grid search. places additional points along the path, weighting
-        allocating a number of steps to each section proportional to it's variance
-
-        parameters
-        ----------
-        steps: int
-            number of total SMC transitions to use. May not use exactly this many due to rounding
-
-        returns
-        -------
-        list of tuples
-            params for the optimal path using variance weighting.
-
-        """
-        return self._create_weighted_path((0.0, 1.0), (1.0, 1.0), steps)
-
-    @staticmethod
-    def linear_path(steps):
-        """ this is the linear geometric path, with no tempering
-
-         parameters
-        ----------
-        steps: int
-            number of total SMC transitions to use.
-
-        returns
-        -------
-        list of tuples
-            params for the optimal path using variance weighting.
-
-        """
-        return [(beta, 1.0) for beta in np.linspace(0, 1, steps)]
 
     def plot_energy_map(self, plot_kwargs=[{}]*3):
         """ plots the estimated energy map for the sampler on each of the three dimensions
@@ -697,7 +652,7 @@ class GeometricPathEstimator(PathEstimator):
         # hack method for constructing the path methods
         self.uniform_path = lambda x: self._create_uniform_path((0.0, ), (1.0, ), x)
         self.weighted_path = lambda x: self._create_weighted_path((0.0, ), (1.0, ), x)
-        self.linear_path = lambda x: [(beta, ) for beta in np.linspace(0,1,x)]
+        self.linear_path = lambda x: [(beta, ) for beta in np.linspace(0, 1, x)]
 
     def fit_energy_map(self, N, n_beta, gp_kwargs={}, smc_kwargs={}, verbose=True):
         """ uses sequential monte carlo to estimate the variance of the thermodynamic integrator at a variety
