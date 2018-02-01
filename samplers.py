@@ -140,7 +140,7 @@ class Sampler:
 
         return samples, next_log_weights, ess
 
-    def sampling(self, path, N, smc_kwargs={}, save_all_samples=True):
+    def sampling(self, path, N, smc_kwargs={}, save_all_samples=True, verbose=True):
         """uses sequential monte carlo to sample from a target distribution
 
         parameters
@@ -154,6 +154,8 @@ class Sampler:
             additional arguments to smc_step. For example, resampling_method or kernel_steps
         save_all_samples: bool
             if true, saves the samples at each trajectory. if false only returns the final particles
+        verbose: bool
+            if true prints a progress bar tracking sampling progress
 
         returns
         -------
@@ -168,11 +170,12 @@ class Sampler:
 
         # init some things
         S = len(path)
-        progress_bar = ProgressBar(S-1)
         log_weights = np.zeros(N)
         ess_vector = np.zeros(S-1)
         samples = self.initial_distribution(N, path[0])
         all_samples = None
+        if verbose:
+            progress_bar = ProgressBar(S - 1)
 
         if save_all_samples:
             all_samples = np.zeros((S,)+samples.shape)
@@ -185,8 +188,11 @@ class Sampler:
 
             if save_all_samples:
                 all_samples[s] = samples.copy()
-            progress_bar.increment()
-        progress_bar.finish()
+
+            if verbose:
+                progress_bar.increment()
+        if verbose:
+            progress_bar.finish()
 
         # package the output
         output = (samples, log_weights, ess_vector)

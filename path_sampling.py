@@ -78,7 +78,7 @@ class PathEstimator:
 
         return grids
 
-    def estimate_lambda(self, path, N, smc_kwargs={}):
+    def estimate_lambda(self, path, N, smc_kwargs={}, verbose=True):
         """ estimates lambda, the log ratio of normalizing constants between the initial distribution
          and the target distribution using a specified path. Uses the thermodynamic integration/path sampling
          method described in Gelman and Meng (1998)
@@ -91,6 +91,8 @@ class PathEstimator:
             number of particles to use
         smc_kwargs: dict
             additional arguments to smc_step. For example, resampling_method or kernel_step
+        verbose: bool
+            if true prints a progress bar tracking sampling progress
 
         returns
         -------
@@ -100,7 +102,7 @@ class PathEstimator:
         """
 
         # do the sampling
-        output = self.sampling(path, N, smc_kwargs, save_all_samples=True)
+        output = self.sampling(path, N, smc_kwargs, save_all_samples=True, verbose=verbose)
         sample_list = output[0]
 
         # estimate the log ratio
@@ -537,7 +539,7 @@ class GeometricTemperedEstimator(PathEstimator):
         self.temp_min = min_temp
         PathEstimator.__init__(self, 2, [0.0, min_temp], [1.0, 1.0], [beta_grid_type, temp_grid_type])
 
-    def fit_energy_map(self, N, n_beta, n_temperature, gp_kwargs={}):
+    def fit_energy_map(self, N, n_beta, n_temperature, gp_kwargs={}, smc_kwargs=False, verbose=True):
         """ uses sequential monte carlo to estimate the variance of the thermodynamic integrator at a variety
         of mixture/temperature combinations.
 
@@ -557,6 +559,10 @@ class GeometricTemperedEstimator(PathEstimator):
             the number of (inverse) temperature settings on the grid
         gp_kwargs: dict
             additional arguments to be passed to self.fit_energy(). i.e. log_transform, dependent, or cutoff.
+        smc_kwargs: dict
+            additional arguments to smc_step. For example, resampling_method or kernel_steps
+        verbose: bool
+            if true prints a progress bar tracking sampling progress
         """
 
         # generate the grids
@@ -571,7 +577,7 @@ class GeometricTemperedEstimator(PathEstimator):
             print '\nSMC with inverse temperature: {0:.2f}'.format(temp)
 
             path = [(beta, temp) for beta in betas]
-            samples = self.sampling(path, N)[0]
+            samples = self.sampling(path, N, smc_kwargs={}, verbose=verbose)[0]
 
             path_list.append(path)
             samples_list.append(samples)
@@ -693,7 +699,7 @@ class GeometricPathEstimator(PathEstimator):
         self.weighted_path = lambda x: self._create_weighted_path((0.0, ), (1.0, ), x)
         self.linear_path = lambda x: [(beta, ) for beta in np.linspace(0,1,x)]
 
-    def fit_energy_map(self, N, n_beta, gp_kwargs={}):
+    def fit_energy_map(self, N, n_beta, gp_kwargs={}, smc_kwargs={}, verbose=True):
         """ uses sequential monte carlo to estimate the variance of the thermodynamic integrator at a variety
         of mixture/temperature combinations.
 
@@ -711,6 +717,10 @@ class GeometricPathEstimator(PathEstimator):
             the number of beta values to use, spaced using self._get_grids
         gp_kwargs: dict
             additional arguments to be passed to self.fit_energy(). i.e. log_transform, dependent, or cutoff.
+        smc_kwargs: dict
+            additional arguments to smc_step. For example, resampling_method or kernel_steps
+        verbose: bool
+            if true prints a progress bar tracking sampling progress
         """
 
         # generate the path
@@ -722,7 +732,7 @@ class GeometricPathEstimator(PathEstimator):
         path_list = []
 
         # get the samples
-        samples = self.sampling(path, N)[0]
+        samples = self.sampling(path, N, smc_kwargs=smc_kwargs, verbose=verbose)[0]
 
         path_list.append(path)
         samples_list.append(samples)
