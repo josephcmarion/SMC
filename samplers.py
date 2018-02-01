@@ -1382,7 +1382,6 @@ class LogisticPriorPathSampler(Sampler):
         self.posterior_precision = np.linalg.inv(self.posterior_covariance)
 
         # load the stan model
-        # load the stan model
         self.stan_model = load_stan_model(
             directory='stan',
             stan_file='logistic_regression.stan',
@@ -1604,7 +1603,7 @@ class LogisticPriorPathSampler(Sampler):
 
 class SimulatedRandomEffectsSampler(Sampler):
 
-    def __init__(self, n_observations, n_groups, alpha, sigma, tau, seed=1337):
+    def __init__(self, n_observations, n_groups, alpha, sigma, tau, load=False, seed=1337):
         """ SMC sampler for a random effects model using simulated data.
         Uses likelihood tempering to move from a model with no random effects to one with random effects.
         Markov kernels are done via nuts in STAN
@@ -1623,6 +1622,12 @@ class SimulatedRandomEffectsSampler(Sampler):
             random effects standard deviation
         seed: int?
             used to set the seed for data generation
+
+
+        parameters
+        ----------
+        load:
+            If true, attempts to load the model. If false, compiles the model
         """
 
         # save all of this model nonsense
@@ -1636,6 +1641,15 @@ class SimulatedRandomEffectsSampler(Sampler):
         self.observations = observations
         self.groups = groups
         self.random_effects = random_effects
+
+        # load the stan model
+        self.stan_model = load_stan_model(
+            directory='stan',
+            stan_file='random_effects.stan',
+            model_code_file='random_effects.txt',
+            model_code_text=self._stan_text_model(),
+            load=load
+        )
 
         Sampler.__init__(self, self._log_pdf, self._initial_distribution, self._markov_kernel)
 
