@@ -140,7 +140,7 @@ class Sampler:
 
         return samples, next_log_weights, ess
 
-    def sampling(self, path, N, smc_kwargs={}, save_all_samples=False):
+    def sampling(self, path, N, smc_kwargs={}, save_all_samples=True):
         """uses sequential monte carlo to sample from a target distribution
 
         parameters
@@ -732,7 +732,7 @@ class NormalPathSampler(Sampler):
 
         # init some things
         mean, precision, covariance = self._get_normal_parameters(params)
-        
+
         samples = stats.multivariate_normal(mean=mean, cov=covariance).rvs(N)
 
         return samples
@@ -1005,6 +1005,30 @@ class MeanFieldIsingSampler(Sampler):
         probabilities /= probabilities.sum()
 
         return probabilities, magnetism
+
+    def _true_normalizing_constant(self, params):
+        """ returns the true normalizing constant for a specified parameter
+
+        parameters
+        ----------
+        params: tuple
+            first value is the inverse temperature parameter in [0,1]
+
+        returns
+        -------
+        float
+            the true normalizing constant
+        """
+        beta = params[0]
+
+        # target normalizing constant
+        probabilities = np.zeros(self.dimension + 1)
+
+        for d in range(self.dimension + 1):
+            magnetism = -self.dimension + 2 * d
+            probabilities[d] = comb(self.dimension, d) * np.exp(beta*self.alpha / self.dimension * magnetism ** 2)
+
+        return probabilities.sum()
 
     def _total_variation(self, samples, params):
         """ returns the total variation distance between the empirical distribution and the true distribution

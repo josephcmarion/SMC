@@ -686,7 +686,69 @@ class GeometricPathEstimator(PathEstimator):
             denotes the kind of spacing to use for beta. Currently only supports 'linear'
         """
 
-        PathEstimator.__init(1, [0], [1], [grid_type])
+        PathEstimator.__init__(self, 1, [0], [1], [grid_type])
+
+        # hack method for constructing the path methods
+        self.uniform_path = lambda x: self._create_uniform_path((0.0, ), (1.0, ), x)
+        self.weighted_path = lambda x: self._create_weighted_path((0.0, ), (1.0, ), x)
+        self.linear_path = lambda x: [(beta, ) for beta in np.linspace(0,1,x)]
+
+    def fit_energy_map(self, N, n_beta, gp_kwargs={}):
+        """ uses sequential monte carlo to estimate the variance of the thermodynamic integrator at a variety
+        of mixture/temperature combinations.
+
+        For now, the mixture constants and (inverse) temperature constants are spaced linearly between 0 (or temp_min)
+        and 1. Additional functionality should be added to incorporate a variety of logarithmic spacings.
+
+        n_temperature runs of SMC are used. Each run uses the beta path with constant (inverse) temperature.
+        After estimating the energy on the grid, GPs are fit to create the energy maps
+
+        parameters
+        ----------
+        N: int
+            number of samples to use during SMC
+        n_beta: int > 1
+            the number of beta values to use, spaced using self._get_grids
+        gp_kwargs: dict
+            additional arguments to be passed to self.fit_energy(). i.e. log_transform, dependent, or cutoff.
+        """
+
+        # generate the path
+        betas = self._get_grids([n_beta])[0]
+        path = [(beta,) for beta in betas]
+
+        # init some things, this looks a bit silly, however it is consistent with the high dimensional methods
+        samples_list = []
+        path_list = []
+
+        # get the samples
+        samples = self.sampling(path, N)[0]
+
+        path_list.append(path)
+        samples_list.append(samples)
+
+        # fit the GPs
+        self.fit_energy(samples_list, path_list, **gp_kwargs)
+
+    def plot_energy_map(self, plot_kwargs={}):
+        """ plots the estimated energy map for the sampler on each of the three dimensions
+
+        parameters
+        ----------
+        plot_kwargs: list of dict
+            length three dictionary, each containing arguments to be passed to a subplot
+        """
+
+        # I might add this as an argument but it seems clumsy
+        n_beta = 1001
+
+        # create grids and estimate energy
+        betas = self._get_grids([n_beta])[0]
+        predicted_energy = self.predict_energy(betas.reshape(-1, 1))
+
+        plt.plot(betas, predicted_energy, color='blue', label='estimated', **plot_kwargs)
+        plt.xlabel(r'$\beta$')
+        plt.ylabel('Energy')
 
 
 class NormalPathEstimator(GeometricTemperedEstimator, NormalPathSampler):
@@ -890,6 +952,40 @@ class IsingPathEstimator(GeometricPathEstimator, MeanFieldIsingSampler):
             energies[i] = np.cov(self.alpha/self.dimension*magnetism**2, aweights=probabilities)
 
         return energies
+
+    def plot_true_energy_map(self, plot_kwargs={}):
+        """ plots the estimated energy map for the sampler on each of the three dimensions
+
+        parameters
+        ----------
+        plot_kwargs: list of dict
+            length three dictionary, each containing arguments to be passed to a subplot
+        """
+
+        # I might add this as an argument but it seems clumsy
+        n_beta = 1001
+
+        # create grids and estimate energy
+        betas = self._get_grids([n_beta])[0]
+        true_energy = self._true_energy([(beta,) for beta in betas])
+
+        plt.plot(betas, true_energy, color='red',  label='true', **plot_kwargs)
+        plt.xlabel(r'$\beta$')
+        plt.ylabel('Energy')
+
+    def true_lambda(self):
+        """ returns the true log ratio of normalizing constants
+
+        returns
+        -------
+        float:
+            the true log ratio of normalizing constants
+        """
+
+        target_z = self._true_normalizing_constant((1.0,))
+        initial_z = self._true_normalizing_constant((0.0,))
+
+        return np.log(target_z) - np.log(initial_z)
 
 
 class LogisticRegressionEstimator(PathEstimator, LogisticRegressionSampler):
