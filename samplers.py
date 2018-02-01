@@ -1637,6 +1637,8 @@ class SimulatedRandomEffectsSampler(Sampler):
         self.groups = groups
         self.random_effects = random_effects
 
+        Sampler.__init__(self, self._log_pdf, self._initial_distribution, self._markov_kernel)
+
     def _initial_distribution(self, N, params):
         """ samples from the initial distribution, a conjugate normal model
 
