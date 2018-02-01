@@ -1600,3 +1600,265 @@ class LogisticPriorPathSampler(Sampler):
 
         plt.tight_layout()
         plt.show()
+
+
+class SimulatedRandomEffectsSampler(Sampler):
+
+    def __init__(self, n_observations, n_groups, alpha, sigma, tau, seed=1337):
+        """ SMC sampler for a random effects model using simulated data.
+        Uses likelihood tempering to move from a model with no random effects to one with random effects.
+        Markov kernels are done via nuts in STAN
+
+        attributes
+        ----------
+        n_observations: int
+            number of observations to generate
+        n_groups: int
+            number of groups to use
+        alpha: float
+            intercept term
+        sigma: float > 0
+            observation deviation
+        tau: float > 0
+            random effects standard deviation
+        seed: int?
+            used to set the seed for data generation
+        """
+
+        # save all of this model nonsense
+        observations, groups, random_effects = self._generate_data(n_observations, n_groups, alpha, sigma, tau, seed)
+        self.n_observations = n_observations
+        self.n_groups = n_groups
+        self.alpha = alpha
+        self.sigma = sigma
+        self.tau = tau
+        self.seed = seed
+        self.observations = observations
+        self.groups = groups
+        self.random_effects = random_effects
+
+    def _initial_distribution(self, N, params):
+        """ samples from the initial distribution, a conjugate normal model
+
+        parameters
+        ----------
+        N: int > 0
+            number of samples to draw
+        params: tuple
+            contains geometric mixture parameter in [0,1]
+
+        returns
+        -------
+        np.array
+            (N, D) matrix of samples
+        """
+
+        # init some things
+        beta = params[0]
+
+        # scale parameters
+        sigmas = stats.invgamma(
+            a=(self.n_observations-1)/2,
+            scale=self.observations.var()*(self.n_observations-1)/2
+        ).rvs((N,1))**0.5
+        taus = stats.invgamma(a=2, scale=2).rvs((N, 1))**0.5
+
+        # location paramters
+        alphas = self.observations.mean()+stats.norm().rvs((N,1))*sigmas
+        random_effects = stats.norm().rvs((N, self.n_groups))*taus
+
+        return np.hstack([alphas, random_effects, taus, sigmas])
+
+    def _log_pdf(self, samples, params):
+        """ log_pdf of the geometric tempered logistic model. Right now the prior doesn't change,
+        so generating the log pdf is easy. That being said, this will need to be changed in the future.
+
+        parameters
+        ----------
+        samples: np.array
+            (N, D) array of sample coefficients
+        params: tuple
+            contains geometric mixture parameter in [0,1]
+
+        return
+        ------
+        np.array
+            (N, ) vector of log_densities
+        """
+
+        beta = params[0]
+        alphas, random_effects, taus, sigmas = self._unpackage_samples(samples, self.n_groups)
+
+        # for the initial distribution
+        deltas = (self.observations[None, :] - alphas[:, None])/sigmas[:, None]
+        log_pdf_initial = (1.0-beta)*(-0.5)*(deltas**2).sum(1)
+
+        # for the target distribution
+        deltas = (self.observations[None, :] - alphas[:, None] - random_effects[:,self.groups])/sigmas[:, None]
+        log_pdf_target = beta * (-0.5) * (deltas ** 2).sum(1)
+
+        return log_pdf_initial + log_pdf_target
+
+    def _markov_kernel(self, samples, params, kernel_steps=10):
+        """ markov kernel targeting the normal distribution, implemented in STAN
+
+        parameters
+        ----------
+        samples: np.array
+            (N, D) array of coefficient samples
+        params: tuple
+            contains geometric mixture parameter in [0,1]
+        kernel_steps: int >= 2
+            number of hamiltonian transitions to run
+
+        return
+        ------
+        np.array
+            (N, D) array of updated samples
+        """
+
+        beta = params[0]
+
+        data = {
+            'n_observations': self.n_observations,
+            'n_groups': self.n_groups,
+            'groups': self.groups + 1,
+            'observations': self.observations,
+            'beta': beta
+        }
+
+        stan_kwargs = {'pars': ['alpha', 'random_effects', 'tau', 'sigma']}
+
+        alphas, random_effects, taus, sigmas = self._unpackage_samples(samples, self.n_groups)
+        sample_list = [
+            {'alpha': alpha, 'random_effects': random_effect, 'tau2': tau ** 2, 'sigma2': sigma ** 2}
+            for alpha, random_effect, tau, sigma
+            in zip(alphas, random_effects, taus, sigmas)
+        ]
+
+        # do the sampling
+        new_samples, fit = stan_model_wrapper(sample_list, data, self.stan_model, kernel_steps, stan_kwargs)
+
+        return new_samples
+
+    @staticmethod
+    def _unpackage_samples(samples, n_groups):
+        """ takes a matrix of samples and splits them into different parameters
+
+        parameters
+        ----------
+        samples: np.array
+            (N, D) sample values, possibly from markov_kernel
+        n_groups: int
+            number of random effect groups
+
+        returns
+        -------
+        np.array
+            (N, ) array of alphas
+        np.array
+            (N, n_groups) array of group random effects
+        np.array
+            (D, ) array of random effect standard deviations
+        np.array
+            (D, ) array of observation noise standard deviations
+        """
+
+        alpha = samples[:, 0]
+        random_effects = samples[:, range(1, n_groups + 1)]
+        tau = samples[:, -2]
+        sigma = samples[:, -1]
+
+        return alpha, random_effects, tau, sigma
+
+    @staticmethod
+    def _generate_data(n_observations, n_groups, alpha, sigma, tau, seed=1337):
+        """ generates data from a simple model with an intercept and a group level random effect
+
+        parameters
+        ----------
+        n_observations: int
+            number of data points to generate
+        n_groups: int
+            number of groups to use
+        alpha: float
+            the baseline intercept
+        sigma: float>0
+            variance of the observation noise
+        tau: float>0
+            standard deviation of the group level effects
+        seed: float?
+            sets the seed of the random number generator for reproducibility
+
+        returns
+        -------
+        np.array
+            (n_observations, ) response vector
+        np.array
+            (n_observations, ) group label vector
+        np.array
+            (n_groups, ) group level intercepts
+
+
+        """
+        np.random.seed(seed)
+        groups = np.random.choice(n_groups, n_observations)
+        random_effects = stats.norm(scale=tau).rvs(n_groups)
+
+        observations = alpha + random_effects[groups] + stats.norm().rvs(n_observations) * sigma
+
+        return observations, groups, random_effects
+
+    @staticmethod
+    def _stan_text_model():
+        """ returns the text for a stan model, just in case you've lost it
+
+         returns
+         -------
+         str
+            a stan model file
+         """
+
+        model_code = """
+        data {
+            int<lower=1> n_observations;
+            int<lower=1> n_groups;
+
+            int<lower=0> groups[n_observations];
+            vector[n_observations] observations;
+
+            real<lower=0, upper=1> beta;
+        }
+
+        parameters {
+            real alpha;
+            vector[n_groups] random_effects;
+
+            real<lower=0> tau2;
+            real<lower=0> sigma2;
+        }
+
+        transformed parameters {
+            vector[n_observations] mu;
+
+            real<lower=0> tau;
+            real<lower=0> sigma;
+
+            mu = alpha + random_effects[groups];
+            tau = sqrt(tau2);
+            sigma = sqrt(sigma2);
+        }
+
+        model {
+            // mean priors
+            target += normal_lpdf(random_effects | 0.0, tau);
+
+            // scale priors
+            target += inv_gamma_lpdf(tau2 | 2, 2);
+
+            // likelihood
+            target += beta*normal_lpdf(observations | mu, sigma);
+            target += (1-beta)*normal_lpdf(observations | alpha, sigma);
+        }
+        """
+        return model_code
