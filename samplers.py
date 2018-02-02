@@ -1601,11 +1601,276 @@ class LogisticPriorPathSampler(Sampler):
         plt.show()
 
 
-class SimulatedRandomEffectsSampler(Sampler):
+class GeometricTemperedLogisticSampler(Sampler):
 
-    def __init__(self, n_observations, n_groups, alpha, sigma, tau, load=False, seed=1337):
+    def __init__(self, X, Y, prior_mean, prior_covariance, load=True):
+        """ SMC sampler for logistic regression. Uses geometric tempering to move from a gaussian centered at the MLE
+        to the posterior of intersest.   Markov kernels are done via nuts in STAN
+
+        attributes
+        ----------
+        X: np.array
+            (N, D) array of covariates, should include the intercept column of ones
+        Y: np.array
+            (N, ) vector of class labels in {0,1}^N
+        prior_mean: np.array
+            (D, ) vector of prior means
+        prior_covariance: np.array
+            (D, D) positive definite prior covariance matrix
+
+        parameters
+        ----------
+        load:
+            If true, attempts to load the model. If false, compiles the model
+        """
+
+        self.X = X
+        self.Y = Y
+
+        # prior parameters
+        self.prior_mean = prior_mean
+        self.prior_covariance = prior_covariance
+        self.prior_precision = np.linalg.inv(prior_covariance)
+
+        # posterior approximation parameters through logistic regression
+        from statsmodels.api import Logit as LogisticRegression
+
+        lr = LogisticRegression(Y, X)
+        fit = lr.fit()
+
+        self.initial_mean = fit.params
+        self.initial_covariance = fit.cov_params()
+        self.initial_precision = np.linalg.inv(self.initial_covariance)
+
+        # load the stan model
+        self.stan_model = load_stan_model(
+            directory='stan',
+            stan_file='logistic_regression.stan',
+            model_code_file='logistic_regression.txt',
+            model_code_text=self._stan_text_model(),
+            load=load
+        )
+        Sampler.__init__(self, self._log_pdf, self._initial_distribution, self._markov_kernel)
+
+    def _get_normal_parameters(self, params):
+        """ returns the mean, precision and covariance of the pseudo prior for the specified params
+
+        parameters
+        ----------
+        params: tuple
+            geometric mixing parameter in [0,1] and inverse temperature in (0, 1]
+
+        returns
+        -------
+        np.array
+            (D, ) mean vector
+        np.array
+            (D, D) precision matrix
+        np.array
+            (D, D) covariance matrix
+        """
+
+        beta, temperature = params
+
+        precision = temperature*(beta * self.prior_precision + (1-beta)*self.initial_precision)
+        covariance = np.linalg.inv(precision)
+
+        mean = temperature*(beta*np.dot(self.prior_precision, self.prior_mean) +
+                            (1 - beta) * np.dot(self.initial_precision, self.initial_mean))
+        mean = np.dot(covariance, mean)
+
+        return mean, precision, covariance
+
+    def _log_pdf(self, samples, params):
+        """ log_pdf of the geometric tempered logistic model
+
+        parameters
+        ----------
+        samples: np.array
+            (N, D) array of sample coefficients
+        params: tuple
+            geometric mixing parameter in [0,1] and inverse temperature in (0, 1]
+
+        return
+        ------
+        np.array
+            (N, ) vector of log_densities
+        """
+
+        beta, temperature = params
+
+        # log likelihood
+        mu = np.dot(samples, self.X.T)
+        pi = expit(mu)
+
+        # fix some numerical issues
+        pi[pi == 1.0] = 1.0-10**-6
+        pi[pi == 0.0] = 10**-6
+
+        log_likelihood = self.Y * np.log(pi) + (1.0 - self.Y) * np.log(1.0 - pi)
+        log_likelihood = temperature * beta * log_likelihood.sum(1)
+
+        # log prior
+        log_prior = temperature * beta * -0.5 * gaussian_kernel(samples, self.prior_mean, self.prior_precision)
+
+        # log initial
+        log_initial = temperature * (1-beta) * -0.5 *\
+            gaussian_kernel(samples, self.initial_mean, self.initial_precision)
+
+        # log density
+        log_density = log_initial + log_prior + log_likelihood
+
+        return log_density
+
+    def _initial_distribution(self, N, params):
+        """ samples from the initial distribution, a flattened normal distribution
+
+        parameters
+        ----------
+        N: int > 0
+            number of samples to draw
+        params: tuple
+            geometric mixing parameter in [0,1] and inverse temperature in (0, 1]
+
+        returns
+        -------
+        np.array
+            (N, D) matrix of normally distributed samples
+        """
+
+        # init some things
+        pseudo_mean, pseudo_precision, pseudo_covariance = self._get_normal_parameters(params)
+        samples = stats.multivariate_normal(mean=pseudo_mean, cov=pseudo_covariance).rvs(N)
+
+        return samples
+
+    def _markov_kernel(self, samples, params, kernel_steps=10):
+        """ markov kernel targeting the normal distribution, implemented in STAN
+
+        parameters
+        ----------
+        samples: np.array
+            (N, D) array of coefficient samples
+        params: tuple
+            geometric mixing parameter in [0,1] and inverse temperature in (0, 1]
+        kernel_steps: int >= 2
+            number of hamiltonian transitions to run
+
+        return
+        ------
+        np.array
+            (N, D) array of updated samples
+        """
+
+        pseudo_mean, pseudo_precision, pseudo_covariance = self._get_normal_parameters(params)
+        beta, temperature = params
+
+        # init some things
+        data = {
+            'D': self.prior_mean.shape[0],
+            'N': self.X.shape[0],
+            'X': self.X,
+            'Y': self.Y,
+            'prior_mean': pseudo_mean,
+            'prior_covariance': pseudo_covariance,
+            'beta': beta*temperature,  # this looks crazy but it's correct given how I've specified the model
+            'inverse_temperature': 1.0  # same with this line
+        }
+        stan_kwargs = {'pars': 'coefficients'}
+        sample_list = [{'x': s} for s in samples]  # data needs to be a list of dictionaries for multi chains
+
+        # do the sampling
+        new_samples, fit = stan_model_wrapper(sample_list, data, self.stan_model, kernel_steps, stan_kwargs)
+
+        return new_samples
+
+    @staticmethod
+    def _stan_text_model():
+        """ returns the text for a stan model, just in case you've lost it
+
+         returns
+         -------
+         str
+            a stan model file
+         """
+
+        model_code = """
+        data {
+            int<lower = 1> D;
+            int<lower = 1> N;
+
+            matrix[N, D] X;
+            vector[N] Y;
+
+            vector[D] prior_mean;
+            matrix[D,D] prior_covariance;
+
+            real<lower=0, upper=1> beta;
+            real<lower=0, upper=1> inverse_temperature;
+        }
+
+        parameters {
+            vector[D] coefficients;
+        }
+
+        transformed parameters {
+            vector[N] mu;
+            vector[N] pi;
+
+            mu = X*coefficients;
+            pi = inv_logit(mu);
+        }
+
+
+        model {
+            target += inverse_temperature*beta*(Y .* log(pi) + (1-Y) .* log(1-pi));
+            target += inverse_temperature*multi_normal_lpdf(coefficients | prior_mean, prior_covariance);
+        }
+        """
+
+        return model_code
+
+    @staticmethod
+    def plot_diagnostics(output, true_coefficients):
+        """ plots diagnostics for the mean field ising sampler.
+
+        parameters
+        ----------
+        output: np.array
+            result of self.sampling, a tuple with samples from the full run, final weights, and ess at each step
+            sampling must be run with save_all_samples=True
+        true_coefficients: np.array
+            true coefficient values, possibly obtained through high quality monte carlo run
+        """
+
+        samples, log_weights, ess = output
+        plt.rcParams['figure.figsize'] = 10, 6
+
+        # plot ess over iterations
+        plt.subplot(121)
+        plt.plot(ess)
+        plt.ylim(-0.05, 1.05)
+        plt.title('Effective sample size')
+        plt.xlabel('Iteration')
+
+        # plot parameter estimates
+        samples.mean(0)
+        plt.subplot(122)
+        plt.boxplot(samples)
+        for i, coefficient in enumerate(true_coefficients):
+            plt.plot([i + 0.6, i + 1.4], [coefficient] * 2, color='purple', ls=':', lw=4)
+        plt.title('Coefficient estimates')
+        plt.xlabel('coefficient number')
+
+        plt.tight_layout()
+        plt.show()
+
+
+class RandomEffectsSampler(Sampler):
+
+    def __init__(self, n_observations, n_groups, alpha, sigma, tau, path_type, load=True, seed=1337):
         """ SMC sampler for a random effects model using simulated data.
-        Uses likelihood tempering to move from a model with no random effects to one with random effects.
+        Supports a large number of possible path types (I hope).
         Markov kernels are done via nuts in STAN
 
         attributes
@@ -1620,15 +1885,18 @@ class SimulatedRandomEffectsSampler(Sampler):
             observation deviation
         tau: float > 0
             random effects standard deviation
+        path_type: str
+            specifies the path type. Options include 'geometric', 'geometric-tempered'
         seed: int?
             used to set the seed for data generation
-
 
         parameters
         ----------
         load:
             If true, attempts to load the model. If false, compiles the model
         """
+        self.valid_types = ['geometric', 'geometric-tempered', 'prior-relaxing']
+        self._check_valid_path_type(path_type)
 
         # save all of this model nonsense
         observations, groups, random_effects = self._generate_data(n_observations, n_groups, alpha, sigma, tau, seed)
@@ -1641,6 +1909,7 @@ class SimulatedRandomEffectsSampler(Sampler):
         self.observations = observations
         self.groups = groups
         self.random_effects = random_effects
+        self.path_type = path_type
 
         # load the stan model
         self.stan_model = load_stan_model(
@@ -1652,6 +1921,30 @@ class SimulatedRandomEffectsSampler(Sampler):
         )
 
         Sampler.__init__(self, self._log_pdf, self._initial_distribution, self._markov_kernel)
+
+    def _params_to_params(self, params):
+        """ converts the path parameters to a full set of parameters
+
+        parameters
+        ----------
+        params: tuple
+            a tuple corresponding to the type chosen by path_type
+
+        returns
+        -------
+        tuple
+            beta, temperature, prior_tightening
+
+        """
+
+        if self.path_type == 'geometric':
+            new_params = (params[0], 1.0, 1.0)
+        elif self.path_type == 'geometric-tempered':
+            new_params = (params[0], params[1], 1.0)
+        elif self.path_type == 'prior-relaxing':
+            new_params = (params[0], 1.0, params[1])
+
+        return new_params
 
     def _initial_distribution(self, N, params):
         """ samples from the initial distribution, a conjugate normal model
@@ -1670,18 +1963,18 @@ class SimulatedRandomEffectsSampler(Sampler):
         """
 
         # init some things
-        beta = params[0]
+        beta, temperature, relax = self._params_to_params(params)
 
         # scale parameters
         sigmas = stats.invgamma(
-            a=(self.n_observations-1)/2,
-            scale=self.observations.var()*(self.n_observations-1)/2
-        ).rvs((N,1))**0.5
+            a=((self.n_observations+2)*temperature-3)/2,
+            scale=self.observations.var()*(self.n_observations-1)*temperature/2
+        ).rvs((N, 1))**0.5
         taus = stats.invgamma(a=2, scale=2).rvs((N, 1))**0.5
 
-        # location paramters
-        alphas = self.observations.mean()+stats.norm().rvs((N,1))*sigmas
-        random_effects = stats.norm().rvs((N, self.n_groups))*taus
+        # location parameters
+        alphas = self.observations.mean()+stats.norm().rvs((N, 1))*sigmas/(self.n_observations*temperature)**0.5
+        random_effects = stats.norm().rvs((N, self.n_groups))*taus/relax**0.5
 
         return np.hstack([alphas, random_effects, taus, sigmas])
 
@@ -1702,18 +1995,22 @@ class SimulatedRandomEffectsSampler(Sampler):
             (N, ) vector of log_densities
         """
 
-        beta = params[0]
-        alphas, random_effects, taus, sigmas = self._unpackage_samples(samples, self.n_groups)
+        beta, temperature, relax = self._params_to_params(params)
+        alphas, random_effects, taus, sigmas = self._unpackage_samples(samples)
 
         # for the initial distribution
         deltas = (self.observations[None, :] - alphas[:, None])/sigmas[:, None]
-        log_pdf_initial = (1.0-beta)*(-0.5)*(deltas**2).sum(1)
+        log_pdf_initial = temperature*(1.0-beta)*(-0.5)*(deltas**2).sum(1)
 
         # for the target distribution
-        deltas = (self.observations[None, :] - alphas[:, None] - random_effects[:,self.groups])/sigmas[:, None]
-        log_pdf_target = beta * (-0.5) * (deltas ** 2).sum(1)
+        deltas = (self.observations[None, :] - alphas[:, None] - random_effects[:, self.groups])/sigmas[:, None]
+        log_pdf_target = temperature*beta * (-0.5) * (deltas ** 2).sum(1)
 
-        return log_pdf_initial + log_pdf_target
+        # prior distribution
+        deltas = (random_effects/taus[:, None])
+        log_pdf_re_prior = -0.5*(deltas**2).sum()*relax
+
+        return log_pdf_initial + log_pdf_target + log_pdf_re_prior
 
     def _markov_kernel(self, samples, params, kernel_steps=10):
         """ markov kernel targeting the normal distribution, implemented in STAN
@@ -1733,19 +2030,21 @@ class SimulatedRandomEffectsSampler(Sampler):
             (N, D) array of updated samples
         """
 
-        beta = params[0]
+        beta, temperature, relax = self._params_to_params(params)
 
         data = {
             'n_observations': self.n_observations,
             'n_groups': self.n_groups,
             'groups': self.groups + 1,
             'observations': self.observations,
-            'beta': beta
+            'beta': beta,
+            'temperature': temperature,
+            'relax': relax
         }
 
         stan_kwargs = {'pars': ['alpha', 'random_effects', 'tau', 'sigma']}
 
-        alphas, random_effects, taus, sigmas = self._unpackage_samples(samples, self.n_groups)
+        alphas, random_effects, taus, sigmas = self._unpackage_samples(samples)
         sample_list = [
             {'alpha': alpha, 'random_effects': random_effect, 'tau2': tau ** 2, 'sigma2': sigma ** 2}
             for alpha, random_effect, tau, sigma
@@ -1757,8 +2056,7 @@ class SimulatedRandomEffectsSampler(Sampler):
 
         return new_samples
 
-    @staticmethod
-    def _unpackage_samples(samples, n_groups):
+    def _unpackage_samples(self, samples):
         """ takes a matrix of samples and splits them into different parameters
 
         parameters
@@ -1781,7 +2079,7 @@ class SimulatedRandomEffectsSampler(Sampler):
         """
 
         alpha = samples[:, 0]
-        random_effects = samples[:, range(1, n_groups + 1)]
+        random_effects = samples[:, range(1, self.n_groups + 1)]
         tau = samples[:, -2]
         sigma = samples[:, -1]
 
@@ -1844,6 +2142,8 @@ class SimulatedRandomEffectsSampler(Sampler):
             vector[n_observations] observations;
 
             real<lower=0, upper=1> beta;
+            real<lower=0, upper=1> temperature;
+            real<lower=0, upper=1> relax;
         }
 
         parameters {
@@ -1867,14 +2167,28 @@ class SimulatedRandomEffectsSampler(Sampler):
 
         model {
             // mean priors
-            target += normal_lpdf(random_effects | 0.0, tau);
+            target += normal_lpdf(random_effects | 0.0, tau)*relax;
 
             // scale priors
             target += inv_gamma_lpdf(tau2 | 2, 2);
 
             // likelihood
-            target += beta*normal_lpdf(observations | mu, sigma);
-            target += (1-beta)*normal_lpdf(observations | alpha, sigma);
+            target += temperature*beta*normal_lpdf(observations | mu, sigma);
+            target += temperature*(1-beta)*normal_lpdf(observations | alpha, sigma);
         }
         """
         return model_code
+
+    def _check_valid_path_type(self, path_type):
+        """ raises an error if path_type is not in the supported types
+
+        parameters
+        ----------
+        path_type: str
+            the type to check
+        """
+
+        if path_type not in self.valid_types:
+            err = 'Invalid path_type. Must be either' + \
+                  ' '.join([''' '{}',''']*len(self.valid_types)).format(*self.valid_types)
+            raise ValueError(err)
