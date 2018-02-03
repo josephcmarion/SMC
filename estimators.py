@@ -618,7 +618,7 @@ class GeometricTemperedLogisticEstimator(GeometricTemperedEstimator, GeometricTe
 
         # log prior
         log_prior = -0.5 * gaussian_kernel(samples, self.prior_mean, self.prior_precision)
-        log_intial = -0.5 * gaussian_kernel(samples, self.inital_mean, self.inital_precision)
+        log_intial = -0.5 * gaussian_kernel(samples, self.initial_mean, self.initial_precisional)
 
         # compute potentials
         potential_beta = temperature*(log_likelihood + log_prior - log_intial)
