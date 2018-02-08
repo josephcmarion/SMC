@@ -5,6 +5,8 @@ import scipy.stats as stats
 from pystan import StanModel
 import time
 import matplotlib.pyplot as plt
+from pandas import read_csv
+from sklearn.preprocessing import StandardScaler
 
 
 def log_weights_to_weights(log_weights, epsilon=10**-3):
@@ -376,3 +378,153 @@ def load_pima_indians_data(file_name='data/pima_indians.csv'):
 
     return X, Y
 
+
+def load_musk_data(file_name='data/musk1.csv'):
+    """ loads the musk 1 data set from the uci repository (clean1.data.Z).  Puts it in the right format for
+    the logistic regression samples. Adds a column of ones and standardizes the data.
+
+    parameters
+    ----------
+    file_name: str
+        location of musk1.csv
+
+    returns
+    -------
+    np.array
+        (N, 166) array of standardized covariates. The first column is an intercept
+    np.array
+        (N, ) response vector (in 0, 1)
+    """
+
+    # load data, drop the name columns
+    directory = os.path.dirname(__file__)
+    df = read_csv(os.path.join(directory, file_name), header=None).drop([0, 1], 1)
+    Y = df.iloc[:, -1].values
+    X = df.iloc[:, :-1].values
+
+    # pull out the data for regression
+    X = StandardScaler().fit_transform(X)
+    X = np.hstack([np.ones((X.shape[0], 1)), X])
+
+    return X, Y
+
+
+def load_sonar_data(file_name='data/sonar.csv'):
+    """ loads the sonar data set from the uci repository.  Puts it in the right format for
+    the logistic regression samples. Adds a column of ones and standardizes the data.
+
+    parameters
+    ----------
+    file_name: str
+        location of sonar.csv
+
+    returns
+    -------
+    np.array
+        (N, 60) array of standardized covariates. The first column is an intercept
+    np.array
+        (N, ) response vector (in 0, 1)
+    """
+
+    # load data, drop the name columns
+    directory = os.path.dirname(__file__)
+    df = read_csv(os.path.join(directory, file_name), header=None).drop([0, 1], 1)
+    Y = df.iloc[:, -1].values
+    X = df.iloc[:, :-1].values
+
+    # pull out the data for regression
+    X = StandardScaler().fit_transform(X)
+    X = np.hstack([np.ones((X.shape[0], 1)), X])
+
+    Y = (Y == 'R').astype('int')
+
+    return X, Y
+
+
+def generate_logistic_regression_data(n_observations, n_covariates, covariate_cov,
+                                      observation_sd=1.0, coefficient_sd=1.0):
+    """ generates data from a logistic regression model. model has an intercept set to 0
+    Coefficients and covariates are drawn from normal distributions
+
+    parameters
+    ----------
+    n_observations: int
+        number of observations to generate
+    n_covariates: int
+        number of covariates to use (includes the intercept)
+    covariate_cov: np.arraymus
+        (n_covariate, n_covariate) positive definite covariance matrix used to sample the X's
+    observation_sd: float > 0
+        amount of noise to add to the XB before transforming
+    coefficient_sd: float >0
+        amounf of noised used when drawing covariates
+
+    returns
+    -------
+    np.array
+        (n_observations, n_covariates) array of features (no intercept)
+    np.array in {0, 1}
+        (n_observations, ) vector of binary responses
+    np.array
+        (n_covariates, ) array of true covariats
+    """
+
+    from scipy.special import expit
+
+    # draw covariates and coefficients
+    X = stats.multivariate_normal(cov=covariate_cov).rvs(n_observations)
+    beta = stats.norm().rvs(n_covariates) * coefficient_sd
+
+    # compute the observation probabilities
+    mu = np.dot(X, beta) + stats.norm().rvs(n_observations) * observation_sd
+    pi = expit(mu)
+
+    # don't allow hard 1s or 0s
+    pi[pi == 1.0] = 1.0 - 10 ** -3
+    pi[pi == 0.0] = 10 ** -3
+
+    Y = (pi < stats.uniform().rvs(n_observations)).astype(int)
+
+    return X, Y, beta
+
+
+def log_linear_spacing(grid_min, grid_max, size, c, decreasing=False):
+    """ Creates a log linear grid from grid_min to grix_max. If increasing has a positive slope.
+
+    parameters
+    ----------
+    grid_min: float
+        lowest value of the grid
+    grid_max: float
+        largest value of the grid
+    size: int
+        number of steps to make
+    c: float
+        slope of the line
+    decreasing: bool
+        if true uses an increasing slope
+
+    returns
+    -------
+    np.array
+        log-linearly spaced grid from grid_min to grid_max
+
+    """
+
+    # grid spacing on the log scale
+    xs = np.linspace(0, 1, size)
+    if decreasing:
+        xs = xs[::-1]
+
+    grid = (np.log(xs + c) - np.log(c) + grid_min)
+
+    # rescale to (0,1)
+    grid -= grid.min()
+    grid /= grid.max()
+
+    # rescale to (min, max)
+    grid = grid * (grid_max - grid_min) + grid_min
+    if decreasing:
+        grid = np.abs(grid-1.0)
+
+    return grid

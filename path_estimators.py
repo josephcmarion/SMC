@@ -2,7 +2,7 @@ import numpy as np
 import GPy
 from networkx import DiGraph
 from networkx.algorithms.shortest_paths.generic import shortest_path
-from utils import unzip
+from utils import unzip, log_linear_spacing
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 from scipy.misc import comb
@@ -69,22 +69,11 @@ class PathEstimator:
             if grid_type == 'linear':
                 grids.append(np.linspace(grid_min, grid_max, size))
 
-            # todo: fill out these options
             elif grid_type == 'log-decreasing':
-                pass
+                grids.append(log_linear_spacing(grid_min, grid_max, size, self.log_increasing_c, True))
 
             elif grid_type == 'log-increasing':
-                xs = np.linspace(0, 1, size)
-                grid = (np.log(xs + self.log_increasing_c) - np.log(self.log_increasing_c)+grid_min)
-
-                # rescale to (0,1)
-                grid -= grid.min()
-                grid /= grid.max()
-
-                # rescale to (min, max)
-                grid = grid * (grid_max - grid_min) + grid_min
-
-                grids.append(grid)
+                grids.append(log_linear_spacing(grid_min, grid_max, size, self.log_increasing_c))
 
         return grids
 
