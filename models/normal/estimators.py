@@ -122,7 +122,7 @@ class NormalPathEstimator(GeometricTemperedEstimator, NormalPathSampler):
         cmap = sns.cubehelix_palette(as_cmap=True)
         for q in range(3):
             plt.subplot(1, 3, q + 1)
-            sns.heatmap(true_energy[:, :, q][::-1], cmap=cmap, vmin=0, **plot_kwargs[q])
+            sns.heatmap(true_energy[:, :, q][::-1], cmap=cmap, **plot_kwargs[q])
             plt.xticks(beta_locs, beta_labels)
             plt.xlabel(r'$\beta$')
 

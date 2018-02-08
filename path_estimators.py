@@ -139,7 +139,7 @@ class PathEstimator:
 
         return energy
 
-    def fit_energy(self, samples_list, path_list, dependent=False, log_transforms=None, cutoff=None):
+    def _fit_energy(self, samples_list, path_list, dependent=False, log_transforms=None, cutoff=None, verbose=True):
         """ fits gaussian process to estimate component energy at different parameter configurations.
         Uses samples and paths from various runs of self.sampling
 
@@ -157,6 +157,8 @@ class PathEstimator:
             experimental.
         cutoff: None or real>0
             if not none, turns energy values over the cuttoff to be equal to cutoff (with their original sign)
+        verbose: bool
+            if true prints messages at the beginning of each optimization routine
         """
 
         # first, convert the samples and path into energy estimates and spatial coordinates
@@ -201,10 +203,11 @@ class PathEstimator:
 
         # now fit the gps
         for q in range(ys.shape[1]):
-            print '\nFitting GP #{}'.format(q)
+            if verbose:
+                print '\nFitting GP #{}'.format(q)
             kernel = GPy.kern.RBF(input_dim=self.Q)
             model = GPy.models.GPRegression(xs, ys[:, q].reshape(-1, 1), kernel)
-            model.optimize_restarts(num_restarts=10)
+            model.optimize_restarts(num_restarts=10, verbose=verbose)
             self.gps.append(model.copy())
 
     def predict_energy(self, param_array):
@@ -379,7 +382,7 @@ class PathEstimator:
 
         return (deltas * avg_energy).sum()
 
-    def update_offset(self, new_offset):
+    def set_offset(self, new_offset):
         """ changes the offset added to the cost at each edge without recreating the graph.
         Useful for testing the effect of different offset values without recreating the graph.
 
@@ -578,7 +581,8 @@ class GeometricTemperedEstimator(PathEstimator):
 
         # conduct the sampling
         for temp in temperatures:
-            print '\nSMC with inverse temperature: {0:.2f}'.format(temp)
+            if verbose:
+                print '\nSMC with inverse temperature: {0:.2f}'.format(temp)
 
             path = [(beta, temp) for beta in betas]
             samples = self.sampling(path, N, smc_kwargs=smc_kwargs, verbose=verbose)[0]
@@ -587,7 +591,7 @@ class GeometricTemperedEstimator(PathEstimator):
             samples_list.append(samples)
 
         # fit the GPs
-        self.fit_energy(samples_list, path_list, **gp_kwargs)
+        self._fit_energy(samples_list, path_list, verbose=verbose, **gp_kwargs)
 
     def plot_energy_map(self, plot_kwargs=[{}]*3):
         """ plots the estimated energy map for the sampler on each of the three dimensions
@@ -692,7 +696,7 @@ class GeometricPathEstimator(PathEstimator):
         samples_list.append(samples)
 
         # fit the GPs
-        self.fit_energy(samples_list, path_list, **gp_kwargs)
+        self._fit_energy(samples_list, path_list, verbose=verbose, **gp_kwargs)
 
     def plot_energy_map(self, plot_kwargs={}):
         """ plots the estimated energy map for the sampler on each of the three dimensions
