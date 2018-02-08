@@ -1,12 +1,13 @@
-from path_estimators import GeometricPathEstimator
-import numpy as np
-from samplers import MeanFieldIsingSampler
 import matplotlib.pyplot as plt
+import numpy as np
+
+from models.samplers.ising import MeanFieldIsingSampler
+from path_estimators import GeometricPathEstimator
 
 
 class IsingPathEstimator(GeometricPathEstimator, MeanFieldIsingSampler):
 
-    def __init__(self, dimension, alpha, path_sampler_kwargs={}):
+    def __init__(self, dimension, alpha, estimator_kwargs={}):
         """ Path sampling estimator for the ising model. Uses a tempered path from the uniform distribution
         to the distribution of interest.
 
@@ -19,12 +20,12 @@ class IsingPathEstimator(GeometricPathEstimator, MeanFieldIsingSampler):
 
         parameters
         ----------
-        path_sampler_kwargs: dict
+        estimator_kwargs: dict
             arguments to be passed to GeometricPathEstimator, generally just 'grid_type'
         """
 
         MeanFieldIsingSampler.__init__(self, dimension, alpha)
-        GeometricPathEstimator.__init__(self, **path_sampler_kwargs)
+        GeometricPathEstimator.__init__(self, **estimator_kwargs)
 
     def _potential(self, samples, params):
         """ computes the potential w.r.t path parameters

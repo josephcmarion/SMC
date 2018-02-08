@@ -1,9 +1,9 @@
+import matplotlib.pyplot as plt
 import numpy as np
 import scipy.stats as stats
-import matplotlib.pyplot as plt
 import seaborn as sns
 
-from samplers import NormalPathSampler
+from models.samplers.normal import NormalPathSampler
 from path_estimators import GeometricTemperedEstimator
 from utils import gaussian_kernel
 

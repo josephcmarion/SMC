@@ -1,5 +1,5 @@
 import numpy as np
-from samplers import RandomEffectsSampler
+from models.samplers.random_effects import RandomEffectsSampler
 from path_estimators import GeometricPathEstimator, GeometricTemperedEstimator
 
 

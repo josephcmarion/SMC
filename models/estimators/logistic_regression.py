@@ -1,8 +1,10 @@
-from path_estimators import PathEstimator, GeometricTemperedEstimator
 import numpy as np
-from samplers import LogisticRegressionSampler, LogisticPriorPathSampler, GeometricTemperedLogisticSampler
-from utils import gaussian_kernel
 from scipy.special import expit
+
+from models.samplers.logistic_regression import LogisticRegressionSampler, LogisticPriorPathSampler, \
+    GeometricTemperedLogisticSampler
+from path_estimators import PathEstimator, GeometricTemperedEstimator
+from utils import gaussian_kernel
 
 
 class LogisticRegressionEstimator(PathEstimator, LogisticRegressionSampler):
