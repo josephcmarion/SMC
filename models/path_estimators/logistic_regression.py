@@ -3,7 +3,7 @@ from scipy.special import expit
 
 from models.samplers.logistic_regression import LogisticRegressionSampler, LogisticPriorPathSampler, \
     GeometricTemperedLogisticSampler
-from path_estimators import PathEstimator, GeometricTemperedEstimator
+from smc_path_estimators import PathEstimator, GeometricTemperedEstimator
 from utils import gaussian_kernel
 
 

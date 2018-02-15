@@ -24,8 +24,8 @@ class PathEstimator:
         grid_maxs: array-like
             the maximum parameter value in each of the Q dimensions
         grid_types: list of str
-            the type of spacing to using in each path dimension. Must be either 'linear', 'log-increasing', or
-            'log-decreasing'
+            the type of spacing to using in each path dimension. Must be either 'linear', 'log_increasing', or
+            'log_decreasing'
         """
 
         self.Q = Q
@@ -34,6 +34,7 @@ class PathEstimator:
         self.grid_mins = grid_mins
         self.grid_maxs = grid_maxs
         self.grid_types = grid_types
+        self.good_types = ['linear', 'log_increasing', 'log_decreasing']
         self.log_increasing_c = 0.01
         self._check_grid_type()  # raises an error if improper types have been specified
 
@@ -69,10 +70,10 @@ class PathEstimator:
             if grid_type == 'linear':
                 grids.append(np.linspace(grid_min, grid_max, size))
 
-            elif grid_type == 'log-decreasing':
+            elif grid_type == 'log_decreasing':
                 grids.append(log_linear_spacing(grid_min, grid_max, size, self.log_increasing_c, True))
 
-            elif grid_type == 'log-increasing':
+            elif grid_type == 'log_increasing':
                 grids.append(log_linear_spacing(grid_min, grid_max, size, self.log_increasing_c))
 
         return grids
@@ -509,11 +510,12 @@ class PathEstimator:
 
     def _check_grid_type(self):
         """ raises an error if the grid types are misspecified """
-        good_types = ['linear', 'log-increasing', 'log-decreasing']
         for grid in self.grid_types:
-            if grid not in good_types:
-                raise ValueError(''' grid types must be either 'linear', 'log-increasing', or 'log-decreasing'.
-                 Check initialization of {}'''.format(self.__class__.__name__))
+            if grid not in self.good_types:
+                error = 'Invalid grid_type. Must be one of' + \
+                        ' '.join([''' '{}','''] * len(self.good_types)).format(*self.good_types) + \
+                        'Check initialization of {}'.format(self.__class__.__name__)
+                raise ValueError(error)
 
 
 class GeometricTemperedEstimator(PathEstimator):
@@ -533,9 +535,9 @@ class GeometricTemperedEstimator(PathEstimator):
         min_temp: float in (0,1)
             the minimum temperature to consider
         beta_grid_type: str
-            denotes the kind of spacing to use for beta. Currently only supports 'linear'
+            denotes the kind of spacing to use for beta
         temp_grid_type: str
-            denotes the kind of spacing to use for the inverse temperature. Currently only supports 'linear'
+            denotes the kind of spacing to use for the inverse temperature
         """
 
         self.temp_min = min_temp
@@ -647,7 +649,7 @@ class GeometricPathEstimator(PathEstimator):
         parameters
         ----------
         grid_type: str
-            denotes the kind of spacing to use for beta. Currently only supports 'linear'
+            denotes the kind of spacing to use for beta
         """
 
         PathEstimator.__init__(self, 1, [0], [1], [grid_type])

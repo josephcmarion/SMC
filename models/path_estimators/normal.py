@@ -4,7 +4,7 @@ import scipy.stats as stats
 import seaborn as sns
 
 from models.samplers.normal import NormalPathSampler
-from path_estimators import GeometricTemperedEstimator
+from smc_path_estimators import GeometricTemperedEstimator
 from utils import gaussian_kernel
 
 

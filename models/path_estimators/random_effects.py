@@ -1,6 +1,6 @@
 import numpy as np
 from models.samplers.random_effects import RandomEffectsSampler
-from path_estimators import GeometricPathEstimator, GeometricTemperedEstimator
+from smc_path_estimators import GeometricPathEstimator, GeometricTemperedEstimator
 
 
 class GeometricRandomEffectsEstimator(GeometricPathEstimator, RandomEffectsSampler):

@@ -2,7 +2,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from models.samplers.ising import MeanFieldIsingSampler
-from path_estimators import GeometricPathEstimator
+from smc_path_estimators import GeometricPathEstimator
 
 
 class IsingPathEstimator(GeometricPathEstimator, MeanFieldIsingSampler):
