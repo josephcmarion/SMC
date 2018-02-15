@@ -528,3 +528,12 @@ def log_linear_spacing(grid_min, grid_max, size, c, decreasing=False):
         grid = np.abs(grid-1.0)
 
     return grid
+
+
+def generate_covariance_matrix(D, sigma, correlation):
+    """ creates a covariance matrix with an off -diagonal  """
+    precision = np.eye(D)
+    precision[range(1, D), range(0, D-1)] = correlation
+    precision[range(0, D-1), range(1, D)] = correlation
+    covariance = np.linalg.inv(precision)*sigma**2
+    return covariance
