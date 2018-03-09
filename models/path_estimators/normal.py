@@ -150,6 +150,16 @@ class RegressionSelectionEstimator(GeometricTemperedEstimator, RegressionSelecti
         Markov kernels are done via independent sampling. Inherits SMC sampling routines from
         smc.samplers.NormalPathSampler
 
+        The likelihood is:
+
+        Y ~ X*coefficients_true + epsilon
+
+        where epsilon is N(0, 1) noise. We use the following prior
+
+        coefficients ~ N(0, 1)
+
+        The X's are drawn from a highly correlated normal, so that the many models are equally reasonable.
+
         attributes
         ----------
         n_observations: int
@@ -201,8 +211,9 @@ class RegressionSelectionEstimator(GeometricTemperedEstimator, RegressionSelecti
         log_prior = (samples ** 2).sum(1) / self.prior_sd ** 2
 
         # compute potentials
-        potential_beta = -temperature*(log_density0 + log_density1)
-        potential_temperature = (1.0 - beta) * log_density0 + beta * log_density1 + log_prior
+        potential_beta = temperature*(-log_density0 + log_density1)
+        # todo: change this back
+        potential_temperature = (1.0 - beta) * log_density0 + beta * log_density1  # + log_prior
 
         return np.vstack([potential_beta, potential_temperature]).T
 
@@ -284,6 +295,10 @@ class RegressionSelectionEstimator(GeometricTemperedEstimator, RegressionSelecti
         float:
             the true log ratio of normalizing constants
         """
-        mean, precision, covariance0 = self._get_normal_parameters((0.0, 1.0))
-        mean, precision, covariance1 = self._get_normal_parameters((1.0, 1.0))
-        return 0.5*(np.linalg.slogdet(2*np.pi*covariance1)[1] - np.linalg.slogdet(2*np.pi*covariance0)[1])
+        mean0, precision0, covariance0 = self._get_normal_parameters((0.0, 1.0))
+        mean1, precision1, covariance1 = self._get_normal_parameters((1.0, 1.0))
+
+        part1 = 0.5*(np.linalg.slogdet(2*np.pi*covariance1)[1] - np.linalg.slogdet(2*np.pi*covariance0)[1])
+        part2 = 0.5*(np.dot(np.dot(mean1.T, precision1), mean1.T) - np.dot(np.dot(mean0.T, precision0), mean0.T))
+
+        return part1 + part2

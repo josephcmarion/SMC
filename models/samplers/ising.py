@@ -3,7 +3,7 @@ import numpy as np
 import scipy.stats as stats
 import matplotlib.pyplot as plt
 from scipy.special import expit, comb
-from smc_samplers import SMCSampler
+from smc_samplers import SMCSampler, SMCAdaptiveSampler
 
 
 class MeanFieldIsingSampler(SMCSampler):
@@ -207,7 +207,7 @@ class MeanFieldIsingSampler(SMCSampler):
             maximum number of density plots to create. If larger than the number of steps, uses the number of steps
         """
 
-        samples, log_weights, ess = output
+        samples, log_weights, ess = output[0], output[1], output[2]
         plt.rcParams['figure.figsize'] = 10, 6
 
         # plot probability of the first mode
@@ -221,9 +221,11 @@ class MeanFieldIsingSampler(SMCSampler):
 
         # plot ess over iterations
         plt.subplot(222)
-        plt.plot(ess)
+        plt.plot(ess, color='blue', label='path')
+        plt.plot(np.array(path).flatten()[1:], color='red', label='path')
         plt.ylim(-0.05, 1.05)
         plt.title('Effective sample size')
+
         plt.xlabel('Iteration')
 
         # plot histogram of the final samples
@@ -255,3 +257,22 @@ class MeanFieldIsingSampler(SMCSampler):
 
         plt.tight_layout()
         plt.show()
+
+
+class AdaptiveMeanFieldIsingSampler(SMCAdaptiveSampler, MeanFieldIsingSampler):
+
+    def __init__(self, dimension, alpha):
+        """ Adaptive sequential monte carlo sampler for the mean field Ising model.
+        Adaptively chooses a temperature ladder in order to move from the uniform
+        distribution to the temperature of interest (alpha). Markov transitions accomplished via Gibb's sampling.
+
+        attributes
+        ----------
+        dimension: int
+            the number of sites/nodes in the graph
+        alpha: float > 0
+            the temperature of the model, determining the behaviour
+        """
+
+        MeanFieldIsingSampler.__init__(self, dimension, alpha)
+        SMCAdaptiveSampler.__init__(self, self._log_pdf, self._initial_distribution, self._markov_kernel)

@@ -1,5 +1,6 @@
 # general imports
 import numpy as np
+from scipy.optimize import brentq
 from utils import effective_sample_size, log_weights_to_weights, residual_resampling, ProgressBar
 
 
@@ -197,3 +198,130 @@ class SMCSampler:
             output = (all_samples, log_weights, ess_vector)
 
         return output
+
+
+class SMCAdaptiveSampler(SMCSampler):
+
+    def __init__(self, log_pdf, initial_distribution, markov_kernel):
+        """generic adaptive sampler for tempered sequential monte carlo
+
+        attributes
+        ----------
+        log_pdf: function
+            see self.log_pdf
+        initial_distribution: function
+            see self.initial_distribution
+        markov_kernel:
+            see self.markov_kernel
+        """
+        SMCSampler.__init__(self, log_pdf, initial_distribution, markov_kernel)
+
+    def sampling(self, N, target_ess=0.9, smc_kwargs={}, save_all_samples=True, verbose=True, max_steps=1000):
+        """uses sequential monte carlo to sample from a target distribution
+
+        parameters
+        ----------
+        N: int
+            number of particles to use
+        target_ess: float
+            The target relative effective sample size in (0, 1). Used to adaptively choose the step size for SMC
+            Values close to 1.0 will lead to small steps and more precise integration, however
+            large values of N are required to effectively estimate the ress when it is close to 1
+        smc_kwargs: dict
+            additional arguments to smc_step. For example, resampling_method or kernel_steps
+        save_all_samples: bool
+            if true, saves the samples at each trajectory. if false only returns the final particles
+        verbose: bool
+            if true prints a progress bar tracking sampling progress
+        max_steps: int
+            maximum number of steps to consider. Used to terminate the sampler in case the while loop fails
+
+        returns
+        -------
+        np.array
+            (N,...) matrix of samples if save_all_samples==True, the the first dimension is the
+            sample index and the the last index is the step index (the final samples are samples[...,-1])
+        np.array
+            (N,) vector of final weights (only meaningful for 'ais' resampling)
+        np.array
+            (len(path)-1, ) vector of effective sample size following each resampling
+        """
+
+        # init some things
+        path = [(0.0,)]
+        log_weights = np.zeros(N)
+        ess_vector = []
+        all_samples = []
+        samples = self.initial_distribution(N, path[0])
+
+        # some stuff to track the looping
+        steps = 0
+
+        if verbose:
+            progress_bar = ProgressBar(100)
+            counter = 0.0
+
+        if save_all_samples:
+            all_samples.append(samples.copy())
+
+        while path[-1][0] < 1.0 and steps < max_steps:
+
+            # find the next step size
+            current_params = path[-1]
+            next_params = (self._determine_next_step(samples, current_params, target_ess), )
+
+            # make the SMC move
+            samples, log_weights, ess = self._smc_step(samples, log_weights, current_params, next_params, **smc_kwargs)
+
+            # update the tracking stuff
+            ess_vector.append(ess)
+            path.append(next_params)
+            steps += 1
+
+            if save_all_samples:
+                all_samples.append(samples.copy())
+
+            # I think this works but I need to check
+            if verbose:
+                while 100*path[-1][0] > counter:
+                    counter += 1.0
+                    progress_bar.increment()
+
+        if verbose:
+            progress_bar.finish()
+
+        # package the output
+        ess_vector = np.array(ess_vector)
+        output = (samples, log_weights, ess_vector, path)
+        if save_all_samples:
+            all_samples = np.array(all_samples)
+            output = (all_samples, log_weights, ess_vector, path)
+
+        return output
+
+    def _determine_next_step(self, samples, params, target_ess):
+        """ determines the next temperature using relative effective sample size """
+
+        # pre compute the log weights and prep the function
+        beta = params[0]
+        log_pdf = self.log_pdf(samples, (1.0,)) # this only makes sense for tempering
+
+        def relative_ess(x):
+            return np.exp(x*log_pdf).mean()**2 / (np.exp(x*log_pdf)**2).mean() - target_ess
+
+        # check to see if you step too far
+        delta_max = 1.0-beta
+        if relative_ess(delta_max) > 0:
+            next_beta = 1.0
+        # otherwise find the best selection using binary search
+        else:
+            next_beta = beta+brentq(relative_ess, 0, delta_max)
+
+        return next_beta
+
+
+
+
+
+
+

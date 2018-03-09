@@ -682,6 +682,17 @@ class RegressionSelectionSampler(SMCSampler):
         to a linear model with another set of features. Uses a tempered geometric mixture.
         Markov kernels are done via independent sampling
 
+        The likelihood is:
+
+        Y ~ X*coefficients + epsilon
+
+        where epsilon is N(0, 1) noise. We use the following prior
+
+        coefficients ~ N(0, 1)
+
+        The X's are drawn from a highly correlated normal, so that the many models are equally reasonable.
+        The data is generated using only a subset of the coefficients
+
         attributes
         ----------
         n_observations: int
@@ -707,8 +718,8 @@ class RegressionSelectionSampler(SMCSampler):
         self.Y = Y
         self.true_coefficients = true_coefficients
         self.design_covariance = design_covariance
-        self.gamma1 = np.diag(np.array([0, 1]*(n_dimensions/2)) == 1)
-        self.gamma0 = np.diag(np.array([0, 1]*(n_dimensions/2)) == 0)
+        self.gamma1 = np.diag(np.array([0, 1]*(n_dimensions/2)) == 1).astype('float')
+        self.gamma0 = np.diag(np.array([0, 1]*(n_dimensions/2)) == 0).astype('float')
         self.n_dimensions = n_dimensions
         self.prior_sd = prior_sd
 
@@ -790,7 +801,8 @@ class RegressionSelectionSampler(SMCSampler):
         log_prior = (samples**2).sum(1)/self.prior_sd**2
 
         # combine them
-        log_density = temperature*((1.0-beta)*log_density0 + beta*log_density1 + log_prior)
+        # todo: reset this
+        log_density = temperature*((1.0-beta)*log_density0 + beta*log_density1) + log_prior
 
         return log_density
 
@@ -814,7 +826,7 @@ class RegressionSelectionSampler(SMCSampler):
 
         beta, temperature = params
 
-        # could pre compute this stuff but I like to see it done explicity
+        # could pre compute this stuff but I like to see it done explicitly
         precision0 = np.dot(np.dot(self.X, self.gamma0).T, np.dot(self.X, self.gamma0))
         precision1 = np.dot(np.dot(self.X, self.gamma1).T, np.dot(self.X, self.gamma1))
 
@@ -822,7 +834,8 @@ class RegressionSelectionSampler(SMCSampler):
         mean1 = np.dot(np.dot(self.X, self.gamma1).T, self.Y)
 
         # compute the quantities of interest
-        precision = temperature*((1.0-beta)*precision0 + beta*precision1 + np.eye(self.n_dimensions)/self.prior_sd**2)
+        # todo: reset this
+        precision = temperature*((1.0-beta)*precision0 + beta*precision1) + np.eye(self.n_dimensions)/self.prior_sd**2
         covariance = np.linalg.inv(precision)
         mean = temperature*((1.0-beta)*mean0 + beta*mean1)
         mean = np.dot(covariance, mean)
