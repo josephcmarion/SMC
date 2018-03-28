@@ -1,7 +1,8 @@
 import numpy as np
 import scipy.stats as stats
 import matplotlib.pyplot as plt
-from utils import load_stan_model, stan_model_wrapper, plot_density, gaussian_kernel, unzip, generate_covariance_matrix
+from utils import load_stan_model, stan_model_wrapper, plot_density, gaussian_kernel, unzip, \
+    generate_covariance_matrix, log_weights_to_weights
 from smc_samplers import SMCSampler
 
 
@@ -146,6 +147,39 @@ class NormalSampler(SMCSampler):
         '''
 
         return model_code
+
+    def _compute_kl_divergence(self, samples, log_weights):
+        """
+        computes the KL divergence between the sample mean/covariance and the true parameters of the
+        target distribution. KL divergence is a measure of discrepancy between the intended distribution
+        and the observed distribution and sqrt(0.5*KL) >= TV
+
+        parameters
+        ----------
+        samples: np.array
+            (S, D) array of samples
+        log_weights: np.array
+            log weights of the particles at the final stage
+
+        returns
+        -------
+        float > 0
+            estimated KL divergence
+        """
+
+        # estimate the sample moments
+        weights = log_weights_to_weights(log_weights)
+        sample_covariance = np.cov(samples.T, aweights=weights)
+        sample_precision = np.linalg.inv(sample_covariance)
+        sample_mean = (samples * weights[:, None]).sum(0)
+
+        # estimate the KL divergence
+        trace = np.trace(np.dot(sample_precision, self.covariance))
+        kernel = gaussian_kernel(self.mean, sample_mean, sample_precision)
+        determinant = np.linalg.slogdet(sample_covariance)[1] - np.linalg.slogdet(self.covariance)[1]
+        kl_divergence = 0.5 * (trace + kernel - self.mean.shape[0] + determinant)
+
+        return kl_divergence
 
 
 class MultimodalNormalSampler(SMCSampler):

@@ -3,7 +3,7 @@ import numpy as np
 import scipy.stats as stats
 import matplotlib.pyplot as plt
 from scipy.special import expit, comb
-from smc_samplers import SMCSampler, SMCAdaptiveSampler
+from smc_samplers import SMCSampler
 
 
 class MeanFieldIsingSampler(SMCSampler):
@@ -257,22 +257,3 @@ class MeanFieldIsingSampler(SMCSampler):
 
         plt.tight_layout()
         plt.show()
-
-
-class AdaptiveMeanFieldIsingSampler(SMCAdaptiveSampler, MeanFieldIsingSampler):
-
-    def __init__(self, dimension, alpha):
-        """ Adaptive sequential monte carlo sampler for the mean field Ising model.
-        Adaptively chooses a temperature ladder in order to move from the uniform
-        distribution to the temperature of interest (alpha). Markov transitions accomplished via Gibb's sampling.
-
-        attributes
-        ----------
-        dimension: int
-            the number of sites/nodes in the graph
-        alpha: float > 0
-            the temperature of the model, determining the behaviour
-        """
-
-        MeanFieldIsingSampler.__init__(self, dimension, alpha)
-        SMCAdaptiveSampler.__init__(self, self._log_pdf, self._initial_distribution, self._markov_kernel)
