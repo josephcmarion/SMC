@@ -779,8 +779,8 @@ class LogisticVariableSelectionSampler(SMCSampler):
         # load the stan model
         self.stan_model = load_stan_model(
             directory='stan',
-            stan_file='logistic_regression.stan',
-            model_code_file='logistic_regression.txt',
+            stan_file='logistic_variable_selection.stan',
+            model_code_file='logistic_variable_selection.txt',
             model_code_text=self._stan_text_model(),
             load=load
         )
