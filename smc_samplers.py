@@ -387,9 +387,286 @@ class SMCSampler:
         return next_beta
 
 
+class SMCDataTempering:
 
+    def __init__(self, M, likelihood, prior, markov_kernel, M0=0):
+        """generic sampler for sequential monte carlo using adaptive data tempering
+        Generally the same as SMCSampler but does adaption in a different way
 
+        attributes
+        ----------
+        self.M: int
+            number of observations
+        likelihood: function
+            see self.log_pdf
+        prior: function
+            see self.initial_distribution
+        markov_kernel:
+            see self.markov_kernel
+        """
+        self.M = M  # uses M to avoid confusion
+        self.M0 = M0  # start iterating later
+        self.likelihood = likelihood
+        self.prior = prior
+        self.markov_kernel = markov_kernel
 
+    # These methods are provided as examples
+    # They need to be filled out and input to __init__
+    @staticmethod
+    def likelihood(samples, params):
+        """computes the log likelihood of the data for each parameter
 
+        parameters
+        ----------
+        samples: np.array
+            array of samples with shape (N, ...)
+        params: (int, float)
+            index of the observation to use and number of partial observations
 
+        returns
+        -------
+        np.array
+            log_likelihood of the observation; has shape (N, )
+        """
 
+    @staticmethod
+    def prior(N):
+        """draws N samples from the initial distribution
+
+        parameters
+        ----------
+        N: int > 0
+            number of samples to draw
+
+        returns
+        -------
+        np.array
+            initial samples, has dimension (N,...)
+        """
+
+    @staticmethod
+    def markov_kernel(samples, params, kernel_steps):
+        """applies a markov transition kernel to each sample, targeting the distribution corresponding to path
+
+        parameters
+        ----------
+        samples: np.array
+            array of samples, has dimension (N,...)
+        params: (int, float)
+            index of the observation to use and number of partial observations
+        kernel_steps: int
+            number of markov kernel transitions to apply
+
+        returns
+        -------
+        np.array
+            new matrix of samples approximating the target distribution
+        """
+
+    def _tempering_step(self, samples, log_weights, params, target_ess, kernel_steps):
+        """uses an a set of adaptive tempering on a single observation
+        used by sampling method when the data tempering approach can't take a fine enough jump
+
+        samples: np.array
+            2d array of samples with shape (N, ...)
+        log_weights: np.array
+            current particle weights on the log scale scale, has shape (N, )
+        params: (int, float)
+            index of the observation to use and number of partial observations
+        target_ess: float in (0,1.0]
+            adaptive resampling tuning parameter. Resamples when the ess is less than or equal to this value
+            choosing min_ess=1.0 leads to resampling at each step
+        kernel_steps: int
+            number of times to apply the markov kernel
+
+        returns
+        -------
+        np.array
+            (N,...) matrix of samples targeting distribution (m, 1.0)
+        np.array
+            (N,) vector of updated log_weights
+        list of np.array
+            matrix of samples from the tempering step
+        list of float
+            list of effective sample size
+        list of tuple
+            adaptively selected path during tempering phase
+        """
+
+        m, beta = params
+        beta = 0.0
+
+        # need to init some stuff to save things
+        path = []
+        all_samples = []
+        esss = []
+        max_iters = 10
+        iters = 0.0
+
+        while beta < 1.0 and iters < max_iters:
+
+            # run binary search to find the next beta
+            next_beta = self._determine_next_step(samples, (m, beta), target_ess)
+
+            # update the weights and resample
+            log_weights = self.likelihood(samples, (m, next_beta)) - self.likelihood(samples, (m, beta))
+            weights = log_weights_to_weights(log_weights)
+            indices = residual_resampling(weights)
+            samples = samples[indices]
+
+            # apply markov kernel transitions
+            samples = self.markov_kernel(samples, (m, next_beta), kernel_steps)
+
+            # save what needs to be saved
+            path.append((m, next_beta))
+            all_samples.append(samples.copy())
+            esss.append(effective_sample_size(weights))
+
+            # update things
+            beta = next_beta*1.0
+            iters += 1
+            log_weights = np.zeros_like(weights)
+
+        return samples, log_weights, all_samples,  esss, path
+
+    def _determine_next_step(self, samples, params, target_ess):
+        """ determines the next temperature using relative effective sample size """
+
+        # pre compute the log weights and prep the function
+        m, beta = params
+        log_pdf = self.likelihood(samples, (m, 1.0))
+
+        def relative_ess(x):
+            return np.exp(x * log_pdf).mean() ** 2 / (np.exp(x * log_pdf) ** 2).mean() - target_ess
+
+        # check to see if you step too far
+        delta_max = 1.0 - beta
+        if relative_ess(delta_max) > 0:
+            next_beta = 1.0
+        # otherwise find the best selection using binary search
+        else:
+            next_beta = beta + brentq(relative_ess, 0, delta_max)
+
+        return next_beta
+
+    def sampling(self, N, target_ess=0.5, kernel_steps=1, tempering=True, save_all_samples=True, verbose=True):
+        """uses sequential monte carlo to sample from a target distribution
+
+        parameters
+        ----------
+        N: int
+            number of particles to use
+        target_ess: float
+            The target relative effective sample size in (0, 1). Used to adaptively
+            choose the number of observations in the model
+        kernel_steps: int
+            number of times to apply the markov kernel
+        tempering: bool
+            if True, uses adaptive tempering when a transition cannot be made
+        save_all_samples: bool
+            if true, saves the samples at each trajectory. if false only returns the final particles
+        verbose: bool
+            if true prints a progress bar tracking sampling progress
+
+        returns
+        -------
+        np.array
+            (N,...) matrix of samples if save_all_samples==True, the the first dimension is the
+            sample index and the the last index is the step index (the final samples are samples[...,-1])
+        np.array
+            (N,) vector of final weights (only meaningful for 'ais' resampling)
+        np.array
+            (len(path)-1, ) vector of effective sample size following each resampling
+        """
+
+        # init some things
+        path = [(self.M0, 1.0)]
+        log_weights = np.zeros(N)
+        ess_vector = []
+        all_samples = []
+        samples = self.prior(N)
+
+        if verbose:
+            progress_bar = ProgressBar(self.M-self.M0)
+
+        if save_all_samples:
+            all_samples.append(samples.copy())
+
+        last_step = True
+        m = self.M0
+
+        while m < self.M:
+
+            # check the effective sample size of the next observation
+            next_log_weight = self.likelihood(samples, (m, 1.0))
+            weights = log_weights_to_weights(log_weights+next_log_weight)
+            ess = effective_sample_size(weights)
+
+            # if the ess is ok keep going
+            if ess > target_ess:
+
+                # update weights and index
+                log_weights += next_log_weight
+                m += 1
+                last_step = False
+                if verbose:
+                    progress_bar.increment()
+
+            # if we just made a step
+            elif last_step:
+
+                # run the tempering subroutine
+                if tempering:
+
+                    # do a tempering sequence
+                    output = self._tempering_step(samples, log_weights, (m, 0.0), target_ess, kernel_steps)
+                    samples, log_weights, tempered_samples, tempered_ess, tempered_path = output
+
+                    # update things
+                    all_samples += tempered_samples
+                    ess_vector += tempered_ess
+                    path += tempered_path
+
+                # if not tempering, blindly forge ahead
+                else:
+                    log_weights += next_log_weight
+
+                # update the trackers
+                m += 1
+                last_step = False
+                if verbose:
+                    progress_bar.increment()
+
+            # if the ess would drop too low and we didn't just make a step
+            else:
+
+                # first, record shit
+                weights = log_weights_to_weights(log_weights)
+                ess = effective_sample_size(weights)
+                ess_vector.append(ess)
+                path.append((m-1, 1.0))
+
+                # draw a new set of samples
+                indices = residual_resampling(weights)
+                samples = samples[indices].copy()
+                log_weights = np.zeros(N)
+
+                # apply the Markov kernel transitions
+                samples = self.markov_kernel(samples, (m-1, 1.0), kernel_steps)
+
+                if save_all_samples:
+                    all_samples.append(samples.copy())
+                last_step = True
+
+        if verbose:
+            progress_bar.finish()
+        path.append((m, 1.0))
+
+        # package the output
+        ess_vector = np.array(ess_vector)
+        output = (samples, log_weights, ess_vector, path)
+        if save_all_samples:
+            all_samples = np.array(all_samples)
+            output = (all_samples, log_weights, ess_vector, path)
+
+        return output
