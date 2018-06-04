@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 from scipy.special import expit
 
 from smc.utils import load_stan_model, stan_model_wrapper, gaussian_kernel
-from smc_samplers import SMCSampler
+from smc.smc_samplers import SMCSampler
 
 
 class LogisticRegressionSampler(SMCSampler):
