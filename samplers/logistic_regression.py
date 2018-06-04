@@ -3,7 +3,7 @@ import scipy.stats as stats
 import matplotlib.pyplot as plt
 from scipy.special import expit
 
-from utils import load_stan_model, stan_model_wrapper, gaussian_kernel
+from smc.utils import load_stan_model, stan_model_wrapper, gaussian_kernel
 from smc_samplers import SMCSampler
 
 
